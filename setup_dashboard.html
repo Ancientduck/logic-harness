@@ -713,12 +713,35 @@
             </div>
 
             <!-- The Big Ass Button -->
-            <button class="big-ass-button" onclick="requestFolderAccess()">
+            <button id="btn-choose-folder" class="big-ass-button" onclick="requestFolderAccess()">
                 <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                     <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
                 </svg>
                 CHOOSE LOGIC FOLDER NOW
             </button>
+
+            <!-- Brave / Unsupported Browser Helper Box -->
+            <div id="browser-compat-banner" style="display:none; background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.25); border-radius:10px; padding:0.9rem; text-align:left; font-size:0.78rem; color:var(--text-muted); line-height:1.5;">
+                <div style="font-weight:700; color:var(--accent-amber); margin-bottom:0.35rem; display:flex; align-items:center; gap:0.4rem;">
+                    <span>⚠️ Direct Folder Access Not Enabled in this Browser</span>
+                </div>
+                <div id="brave-flag-tip" style="margin-bottom:0.5rem;">
+                    If using <strong>Brave</strong>, open a new tab to <code style="color:var(--accent-cyan); user-select:all; cursor:pointer;" onclick="copyFlagUrl()">brave://flags/#file-system-access-api</code>, set it to <strong>Enabled</strong>, and restart Brave.
+                    <button class="btn-verify" style="margin-top:0.3rem; display:inline-flex;" onclick="copyFlagUrl()">Copy Flag URL</button>
+                </div>
+                <div style="border-top:1px dashed rgba(255,255,255,0.1); padding-top:0.5rem; margin-top:0.4rem;">
+                    <span>Or proceed without flags by picking your existing <code>.env</code> file directly:</span>
+                    <div style="margin-top:0.4rem;">
+                        <input type="file" id="fallback-env-input" accept=".env,*" style="display:none;" onchange="handleFallbackFile(this)">
+                        <button class="btn-action secondary" style="font-size:0.75rem; padding:0.4rem 0.8rem;" onclick="document.getElementById('fallback-env-input').click()">
+                            Load .env File Directly
+                        </button>
+                        <button class="btn-action secondary" style="font-size:0.75rem; padding:0.4rem 0.8rem; margin-left:0.4rem;" onclick="skipDirectAccess()">
+                            Configure Manually
+                        </button>
+                    </div>
+                </div>
+            </div>
 
             <div style="font-size: 0.78rem; color: var(--text-faint); font-family: var(--font-mono);">
                 Grant local filesystem access to read and update harness configuration.
@@ -775,13 +798,13 @@
                 </svg>
                 Reload Files
             </button>
-            <button id="btn-save" class="btn-action primary" onclick="saveToDisk()" disabled>
+            <button id="btn-save" class="btn-action primary" onclick="saveToDisk()">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
                     <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
                     <polyline points="17 21 17 13 7 13 7 21"></polyline>
                     <polyline points="7 3 7 8 15 8"></polyline>
                 </svg>
-                Update .env File
+                Save / Export .env
             </button>
         </div>
     </section>
@@ -925,7 +948,7 @@
                     <ol style="margin-bottom: 12px;">
                         <li>Go to <a href="https://aistudio.google.com/apikey" target="_blank" style="color:var(--accent-cyan); text-decoration: underline;">Google AI Studio</a> and create your free Gemini API key in 30 seconds.</li>
                         <li>Open your OmniRoute console at <a href="http://localhost:20128" target="_blank" style="color:var(--accent-cyan); text-decoration: underline;">localhost:20128</a> &rarr; <strong>Providers</strong> &rarr; Add <strong>Google AI Studio</strong> and paste your API key.</li>
-                        <li>Go to <strong>Models</strong> in OmniRoute, locate or copy the Gemini model alias (e.g., <code>gemini-2.5-flash</code> or <code>gemini-2.5-flash-lite</code>), and paste it into the <strong>MODEL</strong> field above.</li>
+                        <li>Go to <strong>Models</strong> in OmniRoute, locate or copy the Gemini model alias (e.g., <code>gemini-3.5-flash-lite</code>), and paste it into the <strong>MODEL</strong> field above.</li>
                         <li>Go to <strong>API Tokens</strong> in OmniRoute, create a token, and paste it into <strong>API_KEY</strong> above.</li>
                     </ol>
                     <div style="font-size: 0.8rem; color: #a1a1aa; border-top: 1px dashed rgba(255,255,255,0.1); padding-top: 8px;">
@@ -1186,13 +1209,59 @@
             setTimeout(() => toast.classList.remove('show'), 3500);
         }
 
+        async function checkBrowserCompatibility() {
+            const hasPicker = typeof window.showDirectoryPicker === 'function';
+            let isBrave = false;
+            try {
+                if (navigator.brave && await navigator.brave.isBrave()) {
+                    isBrave = true;
+                }
+            } catch(e) {}
+
+            if (!hasPicker) {
+                const banner = document.getElementById('browser-compat-banner');
+                if (banner) banner.style.display = 'block';
+                const tip = document.getElementById('brave-flag-tip');
+                if (!isBrave && tip) {
+                    tip.innerHTML = 'Your current browser restricts directory write access. You can upload an existing <code>.env</code> file or configure fields manually and download the resulting file.';
+                }
+            }
+        }
+
+        function copyFlagUrl() {
+            navigator.clipboard.writeText('brave://flags/#file-system-access-api');
+            triggerToast('Copied flag URL to clipboard');
+        }
+
+        function handleFallbackFile(input) {
+            const file = input.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                parseAndPopulate(e.target.result);
+                document.getElementById('folder-indicator').classList.add('active');
+                document.getElementById('folder-name-label').innerText = file.name;
+                document.getElementById('folder-modal').classList.add('hidden');
+                addLog(`Loaded configuration from uploaded file: ${file.name}`, 'success');
+                triggerToast('Loaded ' + file.name + ' successfully');
+            };
+            reader.readAsText(file);
+        }
+
+        function skipDirectAccess() {
+            document.getElementById('folder-modal').classList.add('hidden');
+            document.getElementById('folder-name-label').innerText = 'Manual Mode';
+            addLog('Switched to manual configuration mode.', 'highlight');
+        }
+
         // Folder access flow
         async function requestFolderAccess() {
+            if (!window.showDirectoryPicker) {
+                document.getElementById('browser-compat-banner').style.display = 'block';
+                triggerToast('Direct directory picker not available in this browser', true);
+                return;
+            }
             try {
-                if (!window.showDirectoryPicker) {
-                    alert('Please open this page in Google Chrome or Microsoft Edge for local filesystem access.');
-                    return;
-                }
                 const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
                 directoryHandle = handle;
                 document.getElementById('folder-modal').classList.add('hidden');
@@ -1296,8 +1365,26 @@ MODEL_NAME_GROQ=${vals.MODEL_NAME_GROQ || 'openai/gpt-oss-120b'}
         }
 
         async function saveToDisk() {
+            const envContent = generateEnvString(collectFormData());
+
             if (!directoryHandle) {
-                showFolderPickerModal();
+                // Fallback: Trigger download of .env file
+                try {
+                    const blob = new Blob([envContent], { type: 'text/plain' });
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = '.env';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(a.href);
+                    addLog('Downloaded .env file. Please place it in your LOGIC project directory.', 'success');
+                    triggerToast('.env downloaded! Place in project folder.');
+                } catch(e) {
+                    navigator.clipboard.writeText(envContent);
+                    addLog('.env content copied to clipboard.', 'success');
+                    triggerToast('.env copied to clipboard!');
+                }
                 return;
             }
 
@@ -1305,8 +1392,7 @@ MODEL_NAME_GROQ=${vals.MODEL_NAME_GROQ || 'openai/gpt-oss-120b'}
                 addLog('Writing updates directly to .env...', 'highlight');
                 const fileHandle = await directoryHandle.getFileHandle('.env', { create: true });
                 const writable = await fileHandle.createWritable();
-                const content = generateEnvString(collectFormData());
-                await writable.write(content);
+                await writable.write(envContent);
                 await writable.close();
                 addLog('.env file updated on disk.', 'success');
                 triggerToast('.env saved directly!');
@@ -1319,6 +1405,7 @@ MODEL_NAME_GROQ=${vals.MODEL_NAME_GROQ || 'openai/gpt-oss-120b'}
         async function reloadFromDisk() {
             if (!directoryHandle) {
                 showFolderPickerModal();
+            checkBrowserCompatibility();
                 return;
             }
             await syncFolder();
@@ -1363,6 +1450,7 @@ MODEL_NAME_GROQ=${vals.MODEL_NAME_GROQ || 'openai/gpt-oss-120b'}
         async function saveFindFilePort() {
             if (!directoryHandle) {
                 showFolderPickerModal();
+            checkBrowserCompatibility();
                 return;
             }
 
@@ -1539,6 +1627,7 @@ MODEL_NAME_GROQ=${vals.MODEL_NAME_GROQ || 'openai/gpt-oss-120b'}
             populateForm(DEFAULT_ENV);
             // Always pop the big modal on page load
             showFolderPickerModal();
+            checkBrowserCompatibility();
             setTimeout(checkAllPorts, 1200);
         });
     </script>
