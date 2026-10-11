@@ -4,7 +4,6 @@
 !.env.example
 *.env
 .gemini_cookies.env
-
 # Credentials & OAuth Tokens
 logic_tools/oauth_token_files/
 oauth_token_files/
@@ -17,7 +16,6 @@ oauth_token_files/
 *.key
 *.pfx
 *.p12
-
 # Memory & Local DBs (Keep folder tracked via .gitkeep)
 memory/*.db
 memory/*.sqlite
@@ -26,7 +24,6 @@ memory/summaries/*.txt
 !memory/.gitkeep
 !memory/summaries/.gitkeep
 memory_data/
-
 # Private Folders & Backups
 others/
 logic_bk/
@@ -36,24 +33,27 @@ backups/
 logic_backup/
 to do/
 logic_hall_results/
-
 # Bytecode & Caches
 __pycache__/
 *.pyc
 *.pyo
-
 # Logs
 *.log
 logs/
-
 # Node / Python Virtual Environs
 node_modules/
 venv/
 .venv/
 env/
-
 # OS / Editor Specifics
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
+logic_skills/*
+!logic_skills/logic_code_modification/
+!logic_skills/logic_code_modification/**
+!logic_skills/calendar_modification_tip/
+!logic_skills/calendar_modification_tip/**
+!logic_skills/screenshot_window/
+!logic_skills/screenshot_window/**
