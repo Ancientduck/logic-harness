@@ -83,10 +83,7 @@ D:/Ai/logic/
 |   |-- send_message_to_messenger.py
 |   |-- scrape_site.py
 |   `-- ...
-|-- logic_skills/                # Task-specific procedural playbooks (skill.md)
-|   |-- hack/
-|   |-- torn_api/
-|   `-- web_llm_talk/
+|-- logic_skills/                # Task-specific procedural playbooks (Whitelisted: logic_code_modification, calendar_modification_tip, screenshot_window)
 `-- memory/                      # Context summaries and SQLite database stores
 ```
 
