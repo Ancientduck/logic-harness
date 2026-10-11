@@ -1,3 +1,5 @@
+import os
+
 import socket
 import sys
 import json
@@ -24,9 +26,10 @@ logging.getLogger("urllib3").setLevel(logging.CRITICAL)
 #  CONFIG
 # ============================================================
 DEBUG_PORT = 9222
-USER_DATA_DIR = r"C:\Users\USER\AppData\Local\Google\Chrome\AutomationProfile"
+USER_DATA_DIR = os.path.expandvars(r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\LogicBrowserProfile")
 LOCK_PORT = 9301
 CHROMEDRIVER_PATH = r""
+BRAVE_PATH = os.path.expandvars(r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe")
 
 SIGNATURE = "-LOGIC, Apurbo's AI companion"
 
@@ -72,6 +75,7 @@ def apply_perf_tuning(driver):
 
 def _common_perf_options(options):
     options.page_load_strategy = 'none'
+    options.binary_location = BRAVE_PATH
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument("--disable-features=Translate,MediaRouter,OptimizationHints,TranslateUI")
     return options
@@ -131,11 +135,11 @@ def close_chrome():
     if is_debug_chrome_running():
         try:
             attach_to_existing_chrome().quit()
-            print('[OK] Automation Chrome closed.')
+            print('[OK] Automation Brave closed.')
         except Exception as e:
-            print(f'[ERROR] Could not close Chrome: {e}')
+            print(f'[ERROR] Could not close Brave: {e}')
     else:
-        print('[OK] Chrome was not running.')
+        print('[OK] Brave was not running.')
 
 
 # ============================================================
@@ -687,5 +691,5 @@ if __name__ == '__main__':
                 print(f'[ERROR] Bad argument: {e}')
         else:
             send_messages([
-                ['apurbo', 'Logic Messenger script Test Message'],
+                ['apurbo', 'test'],
             ])

@@ -88,7 +88,7 @@ Available skills ({SKILLS_DIR}):
 <tools>
 Output ONE per turn: <tool>{{"name":"name","args":[...]}}</tool>
 
-check_screen (args:["focus_target"]) → PC screen text
+
 chat_monitor (args:["inbox_name"]) → connect Messenger inbox
 read_skill (["name"]) → Read a skill.md file from available skills using the folder name
 save (args:["name.ext"]) → save last code to logic_tools/
@@ -113,7 +113,7 @@ AVAILABLE SCRIPTS: {', '.join(usable_scripts) if usable_scripts else 'None.'}
 - code_mapper.py ([file,save_path]) → ONLY if user explicitly asks
 - click_phone_button.py (["name"])
 - calendar_add_multiple_events.py ([["YYYY-MM-DD","HH:00-HH:MM","Name","color_id"]])
-- find_file.py (["file_name"]) → exact path
+- find_file.py (["file_name"]) → returns exact path using everything app API
 - read_messenger_unread_messages.py (no args = all unread; ["name"] = targeted inbox, last 10 msgs)
 - get_schedule.py (["YYYY-MM-DD"]) → calendar events (defaults to today)
 </tools>
@@ -121,7 +121,7 @@ AVAILABLE SCRIPTS: {', '.join(usable_scripts) if usable_scripts else 'None.'}
 <tech_ref>
 - Files: open().read() directly, no prior summarize. Differential scripts for changes; never full rewrites. Save/modify directly if scripts grow long.
 - UI/OS: webbrowser.open() for pages. Windows inactive → win32gui.FindWindow + SetForegroundWindow first. Use pywin32/clipboard/selenium/playwright as needed.
-- Automation Profiles: Chrome/Selenium/Playwright → C:\Users\USER\AppData\Local\Google\Chrome\AutomationProfile. Selenium: detach=True, disable AutomationControlled, never driver.quit(). Playwright: sync_playwright, launch_persistent_context, channel="chrome", headless=False, executable_path to chrome.exe. Messenger: Selenium search only, never guess URLs.
+- Automation Profiles: Brave/Selenium/Playwright → C:\Users\USER\AppData\Local\BraveSoftware\Brave-Browser\LogicBrowserProfile. Selenium: detach=True, disable AutomationControlled, never driver.quit(). Playwright: sync_playwright, launch_persistent_context, channel="chrome", headless=False, executable_path to brave.exe. Messenger: Selenium search only, never guess URLs.
 - ADB Phone: media scan after transfer. Extract only needed data from UI dumps; avoid full XML.
 - Automation: always prefer URI / CLI / API.
 </tech_ref>
@@ -148,6 +148,7 @@ LOGIC: <tool>{{"name":"send_message_to_messenger.py","args":[["John","hello",["r
 #print(build_system_prompt())
 
 experimental = """
+- check_screen (args:["focus_target"]) → PC screen text
 - gui_connector(args: ["arguments"]) - Take control of a GUI application
   ["connect", "window_title"] → Connect to a window. Returns all button names. the title is what you see after your [Monitor] TAG
   ["click", "button_name", "left|right"] → Click a button. Returns new buttons if any appeared.

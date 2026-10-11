@@ -133,7 +133,7 @@ Rule: "name" must be either a listed builtin or a script filename ending in .py.
 <tech_ref>
 - Files:  Read files via ```python open().read() without prior summarizing. Apply code changes via differential scripts; do not rewrite full files. Save and modify directly if scripts get too long.
 - UI/OS: Webpages via webbrowser.open(). Windows are inactive; use win32gui.FindWindow and SetForegroundWindow before  actions. Use pywin32,clipboard, selenium, playwright etc, right tool for the right job
-- Automation Profiles: Chrome/Selenium/Playwright use C:\Users\USER\AppData\Local\Google\Chrome\AutomationProfile. Selenium: detach=True, disable AutomationControlled, never driver.quit(). Playwright: sync_playwright, launch_persistent_context, channel="chrome", headless=False, executable_path to chrome.exe. never guess URLs.
+- Automation Profiles: Brave/Selenium/Playwright use C:\Users\USER\AppData\Local\BraveSoftware\Brave-Browser\LogicBrowserProfile. Selenium: detach=True, disable AutomationControlled, never driver.quit(). Playwright: sync_playwright, launch_persistent_context, channel="chrome", headless=False, executable_path to brave.exe. never guess URLs.
 - Automation: Always prioritize URI, CLI, or API-based solutions
 </tech_ref>
 

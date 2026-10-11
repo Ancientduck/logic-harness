@@ -3,13 +3,13 @@
 ## Metadata
 - ID: skill_cdp_web_llm_bridge
 - Version: 2.0.0
-- Trigger: Prompt a web LLM (ChatGPT, Claude, etc.) in an existing Chrome session and extract the streamed reply.
+- Trigger: Prompt a web LLM (ChatGPT, Claude, etc.) in an existing Brave session and extract the streamed reply.
 - Non-Goals: Mass scraping, persistent state, headless auth, logged-in multi-account flows.
 
 ## 1. Prerequisites
-- Chrome running with CDP on port 9222, OR spawn it:
-  C:\Program Files (x86)\Google\Chrome\Application\chrome.exe --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir=<AutomationProfile>
-  Note: x86 path. --remote-allow-origins=* is mandatory (Chrome 149+ rejects WS without it).
+- Brave running with CDP on port 9222, OR spawn it:
+  C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir=<LogicBrowserProfile>
+  Note: x86 path. --remote-allow-origins=* is mandatory (Brave 149+ rejects WS without it).
 - Target tab open to the LLM domain.
 - websocket-client and urllib available. No Selenium.
 
@@ -80,7 +80,7 @@ Poll loop:
 |---|---|
 | ws.recv() timeout on connect | Send command first, then loop |
 | --remote-allow-origins missing | 403 on WS handshake; add the flag |
-| Chrome path wrong | Use C:\Program Files (x86)\ on this machine |
+| Brave path wrong | Use C:\Program Files (x86)\ on this machine |
 | Polling before page transition | sleep(4) after Enter |
 | Stale element refs during stream | Re-query DOM every poll, never cache handles |
 | send_keys truncation | Use native value setter + input event |

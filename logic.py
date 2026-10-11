@@ -386,24 +386,23 @@ class Base_AI():
         self.turn_count = 0
         self.summary_history = []
 
+
     def activity_monitor_worker(self):
         for (
-                    last_title,
-                    last_proc,
-                    last_path,
-                    last_url,
-                    elapsed,
-                    total,
-                    new_title,
-                    new_proc,
-                    new_path,
-                    new_url
-                ) in monitor.monitor():
+            last_title, last_proc, last_path, last_url,
+            elapsed, total, new_title, new_proc, new_path, new_url
+        ) in monitor.monitor():
 
             time_now = datetime.datetime.now().strftime("%I:%M %p")
 
-            self.activity_report = f"[MONITOR] {time_now} | was: {last_title} ({last_proc}) {last_path} {last_url}  | +{monitor.format_time(elapsed)} (total {monitor.format_time(total)}) | now: {new_title} ({new_proc}) {new_path}  {new_url} |"
-    
+            self.activity_report = (
+                f"[MONITOR] {time_now} | "
+                f"was: {last_title} ({last_proc}) {last_path} {last_url} | "
+                f"+{monitor.format_time(elapsed)} "
+                f"(total {monitor.format_time(total)}) | "
+                f"now: {new_title} ({new_proc}) {new_path} {new_url} |"
+            )
+
     def call_logic(self, prompt='something'):
         is_code = False
         in_code = False
@@ -419,9 +418,8 @@ class Base_AI():
         final_prompt = ''
         possible_tool = ''
         user_input = prompt
-        activity_report = monitor.get_live_report()
+        activity_report = self.activity_report
 
-        exe_mode = ''
         def speak_current():
             nonlocal current_sentence
 
@@ -587,18 +585,15 @@ class Base_AI():
         #     ^[ \t]*```[ \t]*$
         # '''
 
-        pattern = r'''
-            ```python[ \t]*(thread|show)?[ \t]*\n
-            (.*?)
-            ^[ \t]*```[ \t]*$
-        '''
-
-
-        match = re.search(
-            pattern,
-            ai_reply,
-            re.DOTALL | re.MULTILINE | re.VERBOSE
+        pattern = re.compile(
+            r"```python[ \t]*(?:(thread|show))?[ \t]*\r?\n"
+            r"(.*?)"
+            r"^[ \t]*```[ \t]*$",
+            re.DOTALL | re.MULTILINE,
         )
+
+        match = pattern.search(ai_reply)
+        
         if match:
             mode = match.group(1) or "run"      # None → "run"
             self.code_block = match.group(2)

@@ -38,6 +38,7 @@ import tempfile
 import queue
 import threading
 import time
+import random
 from io import BytesIO
 
 from deep_web_api import DeepSeekWebProvider
@@ -104,9 +105,9 @@ BASE_URL = os.getenv("BASE_URL", "http://localhost:20128/v1")
 #MODEL = "agn/agnes-3.0-flash"
 
 #MODEL = "cl/cline-free/gemini-3.8-flash"
-MODEL = ""
 
-print(f'model in use: {MODEL}')
+
+
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 MODEL_NAME_GROQ = os.getenv("MODEL_NAME_GROQ", "openai/gpt-oss-120b")
@@ -121,6 +122,7 @@ web_deepseek = DeepSeekWebProvider(
     thinking=False,
     search=False,
 )
+MODEL = web_deepseek.model
 
 client = OpenAI(
     api_key=API_KEY,
@@ -331,7 +333,9 @@ class Base_AI():
         self.code_block = ''
         ai_reply = ''
         summary_prompt = ''
-        max_retries = 3
+        # Provider already retries; keep this low to avoid
+        # multiplicative request bursts on a single turn.
+        max_retries = 1
         delay = 2
         current_sentence = ''
         tts_buffer = ''
@@ -509,7 +513,7 @@ class Base_AI():
         # '''
 
         pattern = r'''
-            ```python[ \t]+(run|thread)[ \t]*\n
+            ```python[ \t]*(thread|show)?[ \t]*\n
             (.*?)
             ^[ \t]*```[ \t]*$
         '''
@@ -522,7 +526,7 @@ class Base_AI():
         )
 
         if match:
-            exe_mode = match.group(1)
+            mode = match.group(1) or "run"      # None → "run"
             self.code_block = match.group(2)
             is_code = True
 
@@ -1546,7 +1550,14 @@ def _worker_main():
 def _supervisor_main():
     script = os.path.abspath(__file__)
     args = [sys.executable, script, '--worker'] + sys.argv[1:]
+    import time as _t
+    _last_restart = 0.0
+    _min_cooldown = 30.0  # seconds between restarts
     while True:
+        _now = _t.monotonic()
+        if _now - _last_restart < _min_cooldown:
+            _t.sleep(_min_cooldown - (_now - _last_restart))
+        _last_restart = _t.monotonic()
         rc = subprocess.call(args)
         if rc != 42:
             break
@@ -1618,6 +1629,10 @@ def run_logic():
             the_console.print(chunk, style=color_reply, end="", highlight=False, markup=False)
 
         print()
+
+        # Small cool-down between turns so rapid follow-ups don't
+        # collapse into a burst from the provider's point of view.
+        time.sleep(random.uniform(1.5, 3.5))
     
 if __name__ == "__main__":
     if '--worker' in sys.argv:

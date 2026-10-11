@@ -4,8 +4,8 @@ import time
 import subprocess
 from playwright.sync_api import sync_playwright
 
-CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-PROFILE_PATH = r"C:\Users\USER\AppData\Local\Google\Chrome\AutomationProfile"
+CHROME_PATH = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
+PROFILE_PATH = ros.path.expandvars(r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\LogicBrowserProfile")
 PORT = 9222
 
 def ensure_chrome():
