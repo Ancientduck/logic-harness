@@ -103,7 +103,7 @@ D:/Ai/logic/
 | `/overlay` | Toggles the visual speech overlay HUD |
 | `/debug` | Toggles prompt debugging output |
 | `/model <name>` | Hot-swaps the underlying LLM provider/model |
-| `/reload <module>` | Hot-reloads an imported Python module without restarting LOGIC |
+| `/reload` | Restarts the LOGIC subsystem cleanly while preserving the last 6 turns of conversation context |
 
 ---
 
