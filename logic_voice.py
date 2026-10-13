@@ -15,8 +15,8 @@ PIPER_CMD = "piper"
 # CONFIG = "logic_voices/miro/en_GB-miro.onnx.json"
 # SPEAKER = 0
 
-MODEL = "en_US-libritts_r-medium.onnx"
-CONFIG = "en_US-libritts_r-medium.onnx.json"
+MODEL = "logic_voices/main_voice/en_US-libritts_r-medium.onnx"
+CONFIG = "logic_voices/main_voice/en_US-libritts_r-medium.onnx.json"
 SPEAKER = 217
 
 

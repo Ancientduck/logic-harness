@@ -3111,9 +3111,7 @@ class LogicTUI(App):
         if getattr(logic_module_ref, "restored", False):
             self.call_from_thread(self._set_spinner, "Resuming...")
             prompt = (
-                "system: [Runtime] I just restarted to pick up code changes. "
-                "My last 6 turns are in context. Do not greet or acknowledge this — "
-                "just continue. Reply with a single short line confirming you're ready."
+                "system: SYSTEM RELOADED, any new code changes should work now"
             )
         else:
             self.call_from_thread(self._set_spinner, "Initializing system...")

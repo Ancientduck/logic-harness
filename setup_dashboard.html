@@ -946,10 +946,12 @@
                         <span>⭐ RECOMMENDED QUICKSTART: Google AI Studio (Free, High Intelligence)</span>
                     </div>
                     <ol style="margin-bottom: 12px;">
-                        <li>Go to <a href="https://aistudio.google.com/apikey" target="_blank" style="color:var(--accent-cyan); text-decoration: underline;">Google AI Studio</a> and create your free Gemini API key in 30 seconds.</li>
-                        <li>Open your OmniRoute console at <a href="http://localhost:20128" target="_blank" style="color:var(--accent-cyan); text-decoration: underline;">localhost:20128</a> &rarr; <strong>Providers</strong> &rarr; Add <strong>Google AI Studio</strong> and paste your API key.</li>
-                        <li>Go to <strong>Models</strong> in OmniRoute, locate or copy the Gemini model alias (e.g., <code>gemini-3.5-flash-lite</code>), and paste it into the <strong>MODEL</strong> field above.</li>
-                        <li>Go to <strong>API Tokens</strong> in OmniRoute, create a token, and paste it into <strong>API_KEY</strong> above.</li>
+                        <li>Go to <a href="https://aistudio.google.com/apikey" target="_blank" style="color:var(--accent-cyan); text-decoration: underline;">Google AI Studio</a> and check available models on their official site.</li>
+                        <li>If the localhost link below doesn't work, open a terminal or command prompt and type <code>omniroute</code> to launch the OmniRoute server first.</li>
+                        <li>Open your OmniRoute Gemini provider page at <a href="http://localhost:20128/dashboard/providers/gemini" target="_blank" style="color:var(--accent-cyan); text-decoration: underline;">OmniRoute Gemini Provider</a> (or go to <strong>Providers</strong>, search for <strong>gemini</strong>, click on Gemini / Google AI Studio).</li>
+                        <li>Click the add button and paste your Google AI Studio API key.</li>
+                        <li>Go to available models in OmniRoute and copy any available alias (the recommended free default model ID is <code>gemini/gemini-3.5-flash-lite</code>), and paste the model alias into the <strong>MODEL</strong> field above.</li>
+                        <li>Go to the OmniRoute <a href="http://localhost:20128/dashboard/api-manager" target="_blank" style="color:var(--accent-cyan); text-decoration: underline;">API Manager</a>, create an API key, and paste it into the <strong>API_KEY</strong> field above.</li>
                     </ol>
                     <div style="font-size: 0.8rem; color: #a1a1aa; border-top: 1px dashed rgba(255,255,255,0.1); padding-top: 8px;">
                         <em>💡 Once LOGIC boots on your machine with Gemini Flash, you can speak directly to LOGIC to guide you through setting up advanced custom model combos, OpenRouter, or Anthropic.</em>
@@ -1176,7 +1178,7 @@
             GROQ_API_KEY: '',
             TINYFISH_API_KEY: '',
             YOU_API_KEY: '',
-            MODEL: 'logic',
+            MODEL: 'gemini/gemini-3.5-flash-lite',
             MODEL_NAME_GROQ: 'openai/gpt-oss-120b'
         };
 

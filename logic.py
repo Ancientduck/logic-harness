@@ -349,7 +349,7 @@ class Base_AI():
         self.gen_code_terminator = False
         self.script_results = None
         self.active_bg_tasks = {}
-        self.activity_report = "[MONITOR] No activity data yet"
+        self.activity_report = "[ACTIVITY] No activity data yet"
         self.monitor_thread = threading.Thread(
             target=self.activity_monitor_worker,
             daemon=True
@@ -393,10 +393,7 @@ class Base_AI():
             elapsed, total, new_title, new_proc, new_path, new_url
         ) in monitor.monitor():
 
-            time_now = datetime.datetime.now().strftime("%I:%M %p")
-
             self.activity_report = (
-                f"[MONITOR] {time_now} | "
                 f"was: {last_title} ({last_proc}) {last_path} {last_url} | "
                 f"+{monitor.format_time(elapsed)} "
                 f"(total {monitor.format_time(total)}) | "
@@ -418,7 +415,8 @@ class Base_AI():
         final_prompt = ''
         possible_tool = ''
         user_input = prompt
-        activity_report = self.activity_report
+        time_now = datetime.datetime.now().strftime("%I:%M %p")
+        activity_report = f"[ACTIVITY] {time_now} | " + self.activity_report
 
         def speak_current():
             nonlocal current_sentence
