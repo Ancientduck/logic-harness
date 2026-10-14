@@ -1,3 +1,4 @@
+import os
 import time
 import sys
 import psutil
@@ -21,18 +22,20 @@ def is_chrome_debugging_running(port=9222):
 
 def launch_fresh_chrome(port=9222):
     options = Options()
-    options.add_argument(r"user-data-dir=C:\\Users\\USER\\AppData\\Local\\Google\\Brave\\LogicBrowserProfile")
+    options.binary_location = r"C:\Users\USER\AppData\Local\BraveSoftware\Brave-Browser\Application\brave.exe"
+    profile_dir = os.path.expandvars(r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\LogicBrowserProfile")
+    options.add_argument(f"user-data-dir={profile_dir}")
     options.add_argument(f"--remote-debugging-port={port}")
     options.add_experimental_option("detach", True)
     options.add_argument("--disable-blink-features=AutomationControlled")
-    driver = webdriver.Brave(options=options)
+    driver = webdriver.Chrome(options=options)
     print(f"Launched new Brave with debugging on port {port} and LogicBrowserProfile")
     return driver
 
 def attach_to_existing_chrome(port=9222):
     options = Options()
     options.add_experimental_option("debuggerAddress", f"127.0.0.1:{port}")
-    driver = webdriver.Brave(options=options)
+    driver = webdriver.Chrome(options=options)
     print(f"Attached to existing Brave debugging session on port {port}")
     return driver
 

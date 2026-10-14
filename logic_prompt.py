@@ -109,7 +109,7 @@ AVAILABLE SCRIPTS: {', '.join(usable_scripts) if usable_scripts else 'None.'}
 - scrape_site.py (['url'])
 - download_file.py → 2-step: ['url'] = scan+list (optional '--ext','pdf,zip'); ['url','1,2,3'] = download. Optional '--out','dir'
 - yt_vid_transcript.py (["video link"]) → transcript then summarize
-- send_message_to_messenger.py (args:[[name,msg]] or [[name,msg,file_path]]) → nested batch. file_path optional (str or list). Always speak as LOGIC (yourself), NEVER as the user. Narrate on behalf of the user (e.g. 'Apurbo says...'), do NOT write as if you are the user. English unless told otherwise.
+- send_message_to_messenger.py (args:[[name,msg]] or [[name,msg,file_path]]) → nested batch. file_path optional (str or list). Always speak as LOGIC (yourself). If sending messages on behalf of Apurbo, state that Logic is messaging on Apurbo's behalf or introduce yourself clearly. English unless told otherwise.
 - code_mapper.py ([file,save_path]) → ONLY if user explicitly asks
 - click_phone_button.py (["name"])
 - calendar_add_multiple_events.py ([["YYYY-MM-DD","HH:00-HH:MM","Name","color_id"]])

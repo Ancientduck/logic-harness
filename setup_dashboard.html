@@ -938,7 +938,7 @@
 
                 <div class="field-group">
                     <label class="field-label">MODEL <span class="subnote">Default System Model</span></label>
-                    <input type="text" id="MODEL" class="text-input" placeholder="logic">
+                    <input type="text" id="MODEL" class="text-input" placeholder="gemini/gemini-3.5-flash-lite">
                 </div>
 
                 <div class="card-instructions">
@@ -1361,7 +1361,7 @@ BASE_URL=${vals.BASE_URL || 'http://localhost:20128/v1'}
 GROQ_API_KEY=${vals.GROQ_API_KEY || ''}
 TINYFISH_API_KEY=${vals.TINYFISH_API_KEY || ''}
 YOU_API_KEY=${vals.YOU_API_KEY || ''}
-MODEL=${vals.MODEL || 'logic'}
+MODEL=${vals.MODEL || 'gemini/gemini-3.5-flash-lite'}
 MODEL_NAME_GROQ=${vals.MODEL_NAME_GROQ || 'openai/gpt-oss-120b'}
 `;
         }
