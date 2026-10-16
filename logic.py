@@ -208,7 +208,7 @@ client = OpenAI(
 )
 
 
-Code_MODEL = ''
+
 class OpenAIChunkWrapper:
     def __init__(self, text):
         self.text = text
@@ -633,20 +633,20 @@ class Base_AI():
                     handler = tool_handlers.get(name)
 
                     if handler:
-                        yield from handler(args)
+                        handler(args)
                     else:
-                        yield from self.run_scripts(tool_data)
+                        self.run_scripts(tool_data)
 
                 except json.JSONDecodeError:
-                    yield from self.call_logic(
+                    user_input_queue.put(
                         "\n[Error: LOGIC produced malformed JSON tool call]\n"
                     )
                 
         if is_code:
             if mode == "run":
-                yield from self.run_gen_code(self.code_block)
+                self.run_gen_code(self.code_block)
             elif mode == "thread":
-                yield from self.run_threaded_code(self.code_block)
+                self.run_threaded_code(self.code_block)
             # mode == "show" → do nothing
             is_code = False
 
@@ -663,7 +663,7 @@ class Base_AI():
             if isinstance(pair, (list, tuple)) and len(pair) >= 2:
                 target, task = str(pair[0]).lower(), pair[1]
             else:
-                yield from self.call_logic("[dispatch] malformed args, expected [[name, task], ...]")
+                user_input_queue.put("[dispatch] malformed args, expected [[name, task], ...]")
                 return
             if target in ("reset", "clear"):
                 who = str(task).lower()
@@ -687,7 +687,7 @@ class Base_AI():
                 continue
             w.dispatch(task, sender="LOGIC")
             results.append(f"{target}: dispatched")
-        yield from self.call_logic("[dispatch] " + " | ".join(results))
+        user_input_queue.put("[dispatch] " + " | ".join(results))
     
     def memory_manager(self,args):
         function_name,text = args[0],args[1]
@@ -695,35 +695,35 @@ class Base_AI():
             t, f = _parse_flags(text)
             result = memorymanager.save(t, f.get("memory_type", "semantic"),
                         f.get("importance", 0.5), f.get("expires_days"))
-            yield from self.call_logic(str(result))
+            user_input_queue.put(str(result))
 
         elif function_name == 'search':
             t, f = _parse_flags(text)
             result = memorymanager.search(t, 5, f.get("memory_type"), f.get("min_importance"))
             memorymanager.reset_sent()
-            yield from self.call_logic("\n".join(result) if isinstance(result, list) else str(result))
+            user_input_queue.put("\n".join(result) if isinstance(result, list) else str(result))
 
         elif function_name == 'delete':
-            yield from self.call_logic(str(memorymanager.delete(text)))
+            user_input_queue.put(str(memorymanager.delete(text)))
 
         elif function_name == 'core':
             r = memorymanager.get_core()
-            yield from self.call_logic("\n".join(r) if r else "No core memories.")
+            user_input_queue.put("\n".join(r) if r else "No core memories.")
 
         elif function_name == 'all':
-            yield from self.call_logic("\n".join(memorymanager.show_all()))
+            user_input_queue.put("\n".join(memorymanager.show_all()))
 
         elif function_name == 'stats':
-            yield from self.call_logic("\n".join(memorymanager.stats()))
+            user_input_queue.put("\n".join(memorymanager.stats()))
 
         elif function_name == 'set':
             mid, flag_str = text.split(" ", 1)
             _, f = _parse_flags(flag_str)
-            yield from self.call_logic(str(memorymanager.update(int(mid), f.get("importance"),
+            user_input_queue.put(str(memorymanager.update(int(mid), f.get("importance"),
                         f.get("memory_type"), f.get("expires_days"), f.get("never_expires", False))))
 
         else:
-            yield from self.call_logic("Unknown memory command: " + function_name)
+            user_input_queue.put("Unknown memory command: " + function_name)
             
     def chat_monitor(self,args):
         target_inbox = args[0]
@@ -745,7 +745,7 @@ class Base_AI():
             buttons = self.gui_control.connect(window_title)
             result = f"[GUI] Connected to {window_title}. {len(buttons)} buttons found:\n" + ", ".join(buttons)
             print(f'\n{result}')
-            yield from self.call_logic(result)
+            user_input_queue.put(result)
 
         elif func == 'click':
             button_name = args[1] if len(args) > 1 else ""
@@ -760,10 +760,10 @@ class Base_AI():
             else:
                 result = f"[GUI] Not found: {button_name}"
             print(f'\n{result}')
-            yield from self.call_logic(result)
+            user_input_queue.put(result)
 
         else:
-            yield from self.call_logic(f"[GUI] Unknown function: {func}")
+            user_input_queue.put(f"[GUI] Unknown function: {func}")
         
     def search_net(self,args):
         from search_net import ask_search_net
@@ -772,7 +772,7 @@ class Base_AI():
 
         search_result = ask_search_net(search_quest)
         print(f"\nsearch_result:{search_result} ")
-        yield from self.call_logic(f"SCRIPT_RESULT: {search_result}")
+        user_input_queue.put(f"SCRIPT_RESULT: {search_result}")
   
 
     def terminate_gen_code(self):
@@ -925,7 +925,7 @@ class Base_AI():
         )
         t.start()
 
-        yield from self.call_logic(
+        user_input_queue.put(
             f"SYSTEM: Background task {task_id} started."
         )
 
@@ -1012,11 +1012,11 @@ class Base_AI():
                     combined = verdict
                 output = combined
 
-            yield from self.call_logic(f"SCRIPT_RESULT: {output}")
+            user_input_queue.put(f"SCRIPT_RESULT: {output}")
 
         except Exception as e:
             print(f"GEN CODE ERROR: {e}", flush=True)
-            yield from self.call_logic(f"SCRIPT_RESULT: Internal runner error: {e}")
+            user_input_queue.put(f"SCRIPT_RESULT: Internal runner error: {e}")
 
         finally:
             if os.path.exists(temp_path):
@@ -1035,7 +1035,7 @@ class Base_AI():
         t.daemon = True
         t.start()
 
-        yield from self.call_logic(f'Reminder set: {reminder_text} - {minutes} minutes')
+        user_input_queue.put(f'Reminder set: {reminder_text} - {minutes} minutes')
 
     def read_skill(self, args):
         name = args[0] if isinstance(args, list) and args else None
@@ -1050,7 +1050,7 @@ class Base_AI():
             None
         )
         if not skill_file:
-            yield from self.call_logic(f"SKILL ERROR: skill.md not found for {name}")
+            user_input_queue.put(f"SKILL ERROR: skill.md not found for {name}")
             return
 
         # UTF-8 first, then Windows encodings, then replacement as final fallback
@@ -1065,7 +1065,7 @@ class Base_AI():
             with open(skill_file, "r", encoding="utf-8", errors="replace") as f:
                 skill_data = f.read()
 
-        yield from self.call_logic(f"SKILL:{skill_data}")
+        user_input_queue.put(f"SKILL:{skill_data}")
 
     def check_screen(self, args):
         global history
@@ -1094,7 +1094,7 @@ class Base_AI():
             for chunk in chat.respond(question, files=[image_path], stream=True, thinking=False):
                 buf.append(chunk)
             result = "".join(buf)
-            yield from self.call_logic(f"SCRIPT_RESULT:{result}")
+            user_input_queue.put(f"SCRIPT_RESULT:{result}")
         finally:
             if os.path.exists(image_path):
                 os.remove(image_path)
@@ -1114,15 +1114,15 @@ class Base_AI():
             if matches:
                 target_path = os.path.join(token_dir, matches[0])
             else:
-                yield from self.call_logic(f"SCRIPT_RESULT: Error: Credential file '{name}' not found in oauth_token_files.")
+                user_input_queue.put(f"SCRIPT_RESULT: Error: Credential file '{name}' not found in oauth_token_files.")
                 return
 
         try:
             with open(target_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            yield from self.call_logic(f"SCRIPT_RESULT: {json.dumps(data, indent=2)}")
+            user_input_queue.put(f"SCRIPT_RESULT: {json.dumps(data, indent=2)}")
         except Exception as e:
-            yield from self.call_logic(f"SCRIPT_RESULT: Error reading credential '{name}': {e}")
+            user_input_queue.put(f"SCRIPT_RESULT: Error reading credential '{name}': {e}")
 
     def save_script(self, file_name):
         name = file_name[0]
@@ -1147,7 +1147,7 @@ class Base_AI():
             path = f'{self.logic_tools}/{script_name}'
 
             if not os.path.exists(path):
-                yield from self.call_logic(f"SCRIPT_RESULT: Error. Script '{script_name}' not found.")
+                user_input_queue.put(f"SCRIPT_RESULT: Error. Script '{script_name}' not found.")
                 return
 
             output = self.run_code_streamed(['python', '-u', path] + string_args)
@@ -1160,7 +1160,7 @@ class Base_AI():
 
 
             
-            yield from self.call_logic(f"SCRIPT_RESULT: {output}\n.")
+            user_input_queue.put(f"SCRIPT_RESULT: {output}\n.")
 
 
 class groq_ai():
@@ -1524,6 +1524,7 @@ def terminal_code(code):
         print('\nCode invalid')
 
 user_input_queue = queue.Queue()
+
 monitor_bot = None
 
 import logic_hall
@@ -1612,8 +1613,10 @@ def _supervisor_main():
         if rc != 42:
             break
 
+discard_next_script_result = False
 
 def run_logic():
+    global discard_next_script_result
     if not restored:
         the_console.print("LOGIC: ", style=color_reply, end="", highlight=False)
         for chunk in logic_ai.call_logic(
@@ -1641,10 +1644,17 @@ def run_logic():
             prompt = get_voice()
             if prompt is not None:
                 print(prompt)
-
+                
         if prompt is None:
             try:
-                prompt = user_input_queue.get_nowait()
+                prompt = user_input_queue.get(timeout=0.1)
+
+                if (discard_next_script_result
+                        and isinstance(prompt, str)
+                        and (prompt.startswith("SCRIPT_RESULT:")
+                             or prompt.startswith("system:[THREAD"))):
+                    discard_next_script_result = False
+                    continue
 
             except queue.Empty:
                 pass
@@ -1660,6 +1670,19 @@ def run_logic():
 
         if prompt.lower() == 'exit':
             break
+        
+        if (isinstance(prompt, str)
+                and not prompt.startswith(("SCRIPT_RESULT:", "system:", "/"))):
+            with user_input_queue.mutex:
+                kept = [
+                    item for item in user_input_queue.queue
+                    if not (isinstance(item, str) and (
+                        item.startswith("SCRIPT_RESULT:")
+                        or item.startswith("system:[THREAD")
+                    ))
+                ]
+                user_input_queue.queue.clear()
+                user_input_queue.queue.extend(kept)
 
         logic_ai.user_prompt = prompt
         

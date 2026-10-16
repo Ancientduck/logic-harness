@@ -86,6 +86,11 @@ from textual.worker import get_current_worker
 from textual.message import Message  # noqa: E402
 USE_REAL = True  
 
+# When True, mount SCRIPT_RESULT / THREAD payloads as SYS so you can see
+# exactly what Logic receives (search results, full script output, etc.).
+# Live [OUTPUT] panels still show streamed lines either way.
+SHOW_LOGIC_FEEDBACK = True
+
 
 try:
     from textual.widgets.text_area import Selection  # noqa: F401,E402
@@ -545,6 +550,27 @@ def build_report_panel(report_text: str, agent: str = "AGENT") -> Panel:
 
 hall_stream_queue = queue.Queue()
 
+def _discard_pending_script_results() -> None:
+    """Remove SCRIPT_RESULT / THREAD results currently sitting in user_input_queue."""
+    if user_input_queue is None:
+        return
+    try:
+        with user_input_queue.mutex:
+            kept = [
+                item for item in user_input_queue.queue
+                if not (
+                    isinstance(item, str)
+                    and (
+                        item.startswith("SCRIPT_RESULT:")
+                        or item.startswith("system:[THREAD")
+                    )
+                )
+            ]
+            user_input_queue.queue.clear()
+            user_input_queue.queue.extend(kept)
+    except Exception:
+        pass
+
 
 def push_hall_event(agent: str, kind: str, payload: str):
     """Pushes a live event directly to the TUI Hall stream pump."""
@@ -809,68 +835,70 @@ def _inject_stream_prelude(code: str) -> str:
     return "".join(lines[:idx]) + _GEN_CODE_TEE_PRELUDE + "".join(lines[idx:])
 
 
-def _wrap_run_code_streamed(ai_instance) -> None:
-    """Replace run_code_streamed with a TUI version that streams lines into
-    _sink_q. Preserves the backend's contract (sets script_results, returns
-    the joined stdout string) so run_gen_code / validate / terminate_gen_code
-    all keep working.
+def _install_line_sink(ai_instance) -> None:
+    """Hook logic.py's existing run_code_streamed via `_line_sink`.
 
-    Also flips `_tui_lines_streamed` on the instance so the depth-2 mirror
-    knows a subprocess just streamed its output this turn.
+    logic.py already does:
+        sink = getattr(self, "_line_sink", None)
+        ...
+        if sink is not None: sink(line)
+
+    So the TUI must NOT replace run_code_streamed — just install the sink.
+    That keeps stdin/encoding/kill behavior owned by logic.py.
     """
-    orig = getattr(ai_instance, "run_code_streamed", None)
-    if orig is None or getattr(orig, "_tui_wrapped", False):
+    if getattr(ai_instance, "_tui_sink_installed", False):
         return
 
-    def wrapped(cmd, _ai=ai_instance):
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-        )
+    def _sink(line, _ai=ai_instance):
         try:
-            _ai.script_results = proc
+            _sink_q.put(line if line is not None else "")
+        except Exception:
+            pass
+        try:
+            _ai._tui_lines_streamed = True
         except Exception:
             pass
 
-        lines = []
-        try:
-            for line in iter(proc.stdout.readline, ""):
-                if not line:
-                    break
-                _sink_q.put(line)
-                try:
-                    _ai._tui_lines_streamed = True
-                except Exception:
-                    pass
-                lines.append(line)
-            proc.wait()
-        except BaseException:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            raise
-        finally:
-            try:
-                proc.stdout.close()
-            except Exception:
-                pass
+    ai_instance._line_sink = _sink
+    ai_instance._tui_sink_installed = True
 
-        return "".join(lines).strip()
 
-    wrapped._tui_wrapped = True
-    ai_instance.run_code_streamed = wrapped
+
+def _drain_if_generator(fn):
+    """Wrap a backend method so generator handlers still run their side effects.
+
+    logic.py call_logic does `handler(args)` without iterating. Methods that
+    `yield` (save_script, chat_monitor, self_reload) would otherwise never
+    execute. We drain them here so TUI stays compatible without changing logic.py.
+    """
+    if fn is None or getattr(fn, "_tui_drained", False):
+        return fn
+
+    def wrapped(*args, **kwargs):
+        result = fn(*args, **kwargs)
+        if inspect.isgenerator(result):
+            collected = []
+            try:
+                for item in result:
+                    collected.append(item)
+            except Exception:
+                raise
+            return collected
+        return result
+
+    wrapped._tui_drained = True
+    try:
+        wrapped.__name__ = getattr(fn, "__name__", "wrapped")
+    except Exception:
+        pass
+    return wrapped
 
 
 def patch_logic_ai_stream_output(ai_instance):
     """Wire the TUI into the backend's real executors, without replacing them.
 
     Execution is the backend's. The TUI only:
-      * installs a run_code_streamed that pushes each line to _sink_q,
+      * installs `_line_sink` so logic.py's own run_code_streamed pushes lines to _sink_q,
       * wraps call_logic at depth 1 to merge sink lines with generator yields,
       * echoes non-streamed depth-2 SCRIPT_RESULT payloads so tools like
         search_net are visible to the user,
@@ -883,7 +911,7 @@ def patch_logic_ai_stream_output(ai_instance):
         return
     ai_instance._tui_patched = True
 
-    _wrap_run_code_streamed(ai_instance)
+    _install_line_sink(ai_instance)
 
     _orig_call_logic = ai_instance.call_logic
 
@@ -936,46 +964,36 @@ def patch_logic_ai_stream_output(ai_instance):
                 code = _inject_stream_prelude(code)
             except Exception:
                 pass
-            yield from _orig_run_gen_code(code)
+            # call_logic invokes this without iterating — must NOT be a generator
+            return _orig_run_gen_code(code)
         ai_instance.run_gen_code = tui_run_gen_code
 
     _orig_search_net = getattr(ai_instance, "search_net", None)
     if _orig_search_net is not None:
         def tui_search_net(args):
-            quest = ""
-            if isinstance(args, list) and args:
-                quest = str(args[0])
-            elif args is not None:
-                quest = str(args)
-            yield (
-                "\n\n<tool_result>\n"
-                f"[searching web: {quest}...]\n"
-                "</tool_result>\n\n"
-            )
-            yield from _orig_search_net(args)
+            # call_logic invokes handlers without iterating — must NOT be a generator
+            return _orig_search_net(args)
         ai_instance.search_net = tui_search_net
 
     _orig_gen_code = getattr(ai_instance, "gen_code", None)
     if _orig_gen_code is not None:
         def tui_gen_code(args):
-            yield (
-                "\n\n<tool_result>\n"
-                "[gen_code] request sent to code model (groq)...\n"
-                "</tool_result>\n\n"
-            )
-            yield from _orig_gen_code(args)
+            # call_logic invokes handlers without iterating — must NOT be a generator
+            return _orig_gen_code(args)
         ai_instance.gen_code = tui_gen_code
 
     _orig_check_screen = getattr(ai_instance, "check_screen", None)
     if _orig_check_screen is not None:
         def tui_check_screen(args):
-            yield (
-                "\n\n<tool_result>\n"
-                "[screen] capturing and analyzing screenshot...\n"
-                "</tool_result>\n\n"
-            )
-            yield from _orig_check_screen(args)
+            # call_logic invokes handlers without iterating — must NOT be a generator
+            return _orig_check_screen(args)
         ai_instance.check_screen = tui_check_screen
+
+    # Drain yield-based handlers so their side effects still run under call_logic.
+    for _name in ("save_script", "chat_monitor", "self_reload"):
+        _fn = getattr(ai_instance, _name, None)
+        if _fn is not None:
+            setattr(ai_instance, _name, _drain_if_generator(_fn))
 
 
 def hook_worker_for_live_hall_stream(worker):
@@ -3099,6 +3117,12 @@ class LogicTUI(App):
             self._pending_prompts.append(prompt)
             self._refresh_hint()
         else:
+            # Normal user message → drop any stale script/tool results still in the queue.
+            if (
+                isinstance(prompt, str)
+                and not prompt.startswith(("SCRIPT_RESULT:", "system:", "/"))
+            ):
+                _discard_pending_script_results()
             self._mark_busy_now()
             self._dispatch_prompt(prompt)
 
@@ -3387,11 +3411,28 @@ class LogicTUI(App):
             next_prompt = self._pending_prompts.pop(0)
             if not next_prompt:
                 continue
+            # Interrupting / follow-up user message wins over a pending SCRIPT_RESULT.
+            if (
+                isinstance(next_prompt, str)
+                and not next_prompt.startswith(("SCRIPT_RESULT:", "system:", "/"))
+            ):
+                _discard_pending_script_results()
             self._mark_busy_now()
             self._dispatch_prompt(next_prompt)
             break
 
     def _enqueue_or_dispatch(self, injected: str) -> None:
+        # SCRIPT_RESULT / THREAD results are already shown live via the sink.
+        # Still feed them to Logic for the feedback loop. Optionally also mount
+        # as SYS so you can inspect exactly what Logic receives.
+        if isinstance(injected, str) and (
+            injected.startswith("SCRIPT_RESULT:")
+            or injected.startswith("system:[THREAD")
+        ):
+            if SHOW_LOGIC_FEEDBACK:
+                self._mount_chat_msg("SYS", injected)
+            self._queue_or_dispatch_prompt(injected)
+            return
         self._mount_chat_msg("SYS", injected)
         self._queue_or_dispatch_prompt(injected)
 
@@ -3431,6 +3472,16 @@ class LogicTUI(App):
             try:
                 while True:
                     injected = user_input_queue.get_nowait()
+                    # If the user already queued a normal follow-up, drop stale results.
+                    if (
+                        self._pending_prompts
+                        and isinstance(injected, str)
+                        and (
+                            injected.startswith("SCRIPT_RESULT:")
+                            or injected.startswith("system:[THREAD")
+                        )
+                    ):
+                        continue
                     self._enqueue_or_dispatch(injected)
             except queue.Empty:
                 pass
@@ -3533,7 +3584,15 @@ class LogicTUI(App):
             return
         is_cmd = val.startswith("/")
         if self.is_processing and not is_cmd:
-            self._mount_chat_msg("SYS", "LOGIC is still working — wait or use /stop.")
+            # Queue instead of hard-block so the user can interrupt / follow up.
+            self._pending_prompts.append(val)
+            self._mount_chat_msg("YOU", val)
+            self._mount_chat_msg(
+                "SYS",
+                f"Queued ({len(self._pending_prompts)} waiting) — will run after current turn.",
+            )
+            inp.text = ""
+            self._refresh_hint()
             return
         inp.text = ""
         self._process_command_or_chat(val)
