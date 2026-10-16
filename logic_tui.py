@@ -894,6 +894,83 @@ def _drain_if_generator(fn):
     return wrapped
 
 
+def _patch_session_rollback(session_cls):
+    """Class-level safety net against retry duplicates (logic.py stays stock).
+
+    OpenAIChatSession.send_message_stream appends the user prompt to history
+    BEFORE hitting the API. If the stream dies mid-turn, that dangling user
+    message stays and call_logic's retry loop re-appends the same prompt, so
+    the model receives it twice (observed as a duplicated boot greeting /
+    schedule). Wrapping at class level covers every session instance logic.py
+    creates, including ones swapped in later by /model or reset_chat.
+    """
+    if getattr(session_cls, "_tui_rollback_patched", False):
+        return
+    _orig_sms = session_cls.send_message_stream
+
+    def send_message_stream_with_rollback(self, prompt):
+        snapshot = list(self.history) if isinstance(self.history, list) else None
+        gen = _orig_sms(self, prompt)
+        try:
+            for chunk in gen:
+                yield chunk
+        except BaseException:
+            # Failed turn: drop whatever it appended (the dangling user
+            # prompt) so the retry in call_logic starts clean and cannot
+            # duplicate the prompt in history.
+            if snapshot is not None:
+                try:
+                    self.history[:] = snapshot
+                except Exception:
+                    pass
+            raise
+
+    try:
+        send_message_stream_with_rollback.__name__ = getattr(
+            _orig_sms, "__name__", "send_message_stream"
+        )
+    except Exception:
+        pass
+    session_cls.send_message_stream = send_message_stream_with_rollback
+    session_cls._tui_rollback_patched = True
+
+
+def _repair_session_history(session):
+    """One-shot startup cleanup of a polluted chat history.
+
+    Removes adjacent duplicate "system:" user entries and a trailing user
+    entry that never got a reply (turn killed mid-stream), so a /reload
+    restore or an old double-greeting can't carry duplicates forward.
+    """
+    hist = getattr(session, "history", None)
+    if not isinstance(hist, list) or not hist:
+        return
+    try:
+        cleaned = []
+        for msg in hist:
+            if (
+                isinstance(msg, dict)
+                and msg.get("role") == "user"
+                and isinstance(msg.get("content"), str)
+                and msg["content"].startswith("system:")
+                and cleaned
+                and isinstance(cleaned[-1], dict)
+                and cleaned[-1].get("role") == "user"
+                and cleaned[-1].get("content") == msg["content"]
+            ):
+                continue  # adjacent duplicate system prompt
+            cleaned.append(msg)
+        if cleaned and isinstance(cleaned[-1], dict) and cleaned[-1].get("role") == "user":
+            cleaned.pop()  # unanswered dangling turn
+        if len(cleaned) != len(hist):
+            session.history = cleaned
+            sys.stderr.write(
+                f"[TUI] history repair: {len(hist)} -> {len(cleaned)} entries\n"
+            )
+    except Exception as e:
+        sys.stderr.write(f"[TUI] history repair skipped: {e}\n")
+
+
 def patch_logic_ai_stream_output(ai_instance):
     """Wire the TUI into the backend's real executors, without replacing them.
 
@@ -910,6 +987,11 @@ def patch_logic_ai_stream_output(ai_instance):
     if getattr(ai_instance, "_tui_patched", False):
         return
     ai_instance._tui_patched = True
+
+    # Retry-duplicate protection + startup history repair. Installed here so
+    # logic.py itself stays completely stock.
+    _patch_session_rollback(type(ai_instance.chat))
+    _repair_session_history(ai_instance.chat)
 
     _install_line_sink(ai_instance)
 
@@ -3140,7 +3222,10 @@ class LogicTUI(App):
         else:
             self.call_from_thread(self._set_spinner, "Initializing system...")
             prompt = (
-                f"system: user is online. Greet briefly. "
+                "system: user is online. Greet briefly. "
+                "If the schedule below is already covered in the previous summary, "
+                "do not repeat those items — ask about the user's current activity "
+                "or mood instead. "
                 f"Previous session: {load_last_summary()} | "
                 f"Schedule: {get_local_day_schedule()}"
             )
