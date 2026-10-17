@@ -272,6 +272,21 @@ LIVE_STREAM_OUTPUT_LINES = 120
 SPINNER_INTERVAL = 0.12
 TOPBAR_INTERVAL = 1.0
 
+# ── Flood guards (added after a multi-MB tool dump froze the UI) ─────────────
+# A script that prints hundreds of KB of output (e.g. dumping binary strings
+# from a save file) used to grow the live stream buffer without limit: the UI
+# thread re-parsed and re-rendered the WHOLE buffer every ~70 ms until the
+# terminal froze. These caps bound the TUI display and the SCRIPT_RESULT
+# prompt forwarded to LOGIC. logic.py itself stays stock.
+MAX_STREAM_BUF_CHARS = 64_000      # live stream display buffer (head + tail)
+STREAM_BUF_HEAD_KEEP = 2_000       # keep the turn's opening (tool call etc.)
+STREAM_TRIM_AT = MAX_STREAM_BUF_CHARS + 32_000  # trim trigger (amortized)
+MAX_SCRIPT_RESULT_TO_LOGIC = 120_000  # SCRIPT_RESULT prompt cap fed to LOGIC
+SCRIPT_RESULT_HEAD_KEEP = 12_000      # keep verdict + first output lines
+MAX_SYS_FEEDBACK_CHARS = 6_000        # SYS feedback bubble cap
+MAX_ECHO_RESULT_CHARS = 16_000        # depth-2 non-streamed echo cap
+SINK_BATCH_LINES = 200                # sink lines merged per stream chunk
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  STREAM PARSER & FENCE BUFFER
@@ -297,6 +312,25 @@ def balance_markdown_fences(text: str) -> str:
     if fence_count % 2 != 0:
         return text + "\n```"
     return text
+
+
+def _cap_text_middle(text: str, cap: int, head: int,
+                     marker: str = "…[truncated]…") -> str:
+    """Cap text to ~cap chars, keeping the head and the tail.
+
+    For giant tool outputs: the middle of a multi-hundred-KB dump is noise
+    for both the chat display and the model, while the verdict line at the
+    top and the final lines at the bottom carry the signal. No-op on small
+    text, and only ever shrinks.
+    """
+    if len(text) <= cap:
+        return text
+    head = max(0, min(head, cap // 2))
+    tail = cap - head - len(marker) - 40
+    if tail <= 0:
+        return text[:cap]
+    dropped = len(text) - head - tail
+    return f"{text[:head]}\n{marker} — {dropped:,} chars dropped —\n{text[-tail:]}"
 
 
 def parse_tool_json(raw: str):
@@ -653,18 +687,32 @@ def _merge_sink_and_gen(gen):
 
     threading.Thread(target=_drive, daemon=True, name="tui-logic-driver").start()
 
+    def _drain_sink_batch():
+        """Pull up to SINK_BATCH_LINES sink lines merged into ONE chunk.
+
+        Script dumps emit thousands of lines per second; yielding per line
+        made the stream loop and every downstream buffer copy pay per-line
+        costs — quadratic end-to-end on big dumps.
+        """
+        batch = []
+        while len(batch) < SINK_BATCH_LINES:
+            try:
+                batch.append(_sink_q.get_nowait())
+            except queue.Empty:
+                break
+        return "".join(batch) if batch else None
+
     opened = False
     while True:
         # 1. Drain any lines the backend's sink pushed since last loop.
         while True:
-            try:
-                line = _sink_q.get_nowait()
-            except queue.Empty:
+            merged = _drain_sink_batch()
+            if merged is None:
                 break
             if not opened:
                 yield "\n\n<tool_result>\n"
                 opened = True
-            yield line
+            yield merged
 
         # 2. Wait for the next generator chunk.
         try:
@@ -676,14 +724,13 @@ def _merge_sink_and_gen(gen):
             # Sink writes are happens-before DONE (same thread), so one
             # final drain captures any trailing lines.
             while True:
-                try:
-                    line = _sink_q.get_nowait()
-                except queue.Empty:
+                merged = _drain_sink_batch()
+                if merged is None:
                     break
                 if not opened:
                     yield "\n\n<tool_result>\n"
                     opened = True
-                yield line
+                yield merged
             if opened:
                 yield "</tool_result>\n\n"
             return
@@ -1025,7 +1072,10 @@ def patch_logic_ai_stream_output(ai_instance):
                     content = prompt[len("SCRIPT_RESULT:"):].strip()
                     if content:
                         yield "\n\n<tool_result>\n"
-                        yield content + "\n"
+                        yield _cap_text_middle(
+                            content, MAX_ECHO_RESULT_CHARS, 2_000,
+                            "…[output truncated for display]…",
+                        ) + "\n"
                         yield "</tool_result>\n\n"
             else:
                 text = prompt if isinstance(prompt, str) else repr(prompt)
@@ -3270,9 +3320,24 @@ class LogicTUI(App):
                         buf += "\n[generation cancelled]"
                         break
                     buf += chunk if chunk is not None else ""
-                    self._stream_state = (msg, buf)
+                    # Flood guard: a multi-MB tool dump used to grow buf
+                    # without limit — every UI tick re-parsed and re-rendered
+                    # the whole buffer until the terminal froze. Keep the
+                    # display buffer bounded (head + tail).
+                    if len(buf) > STREAM_TRIM_AT:
+                        dropped = len(buf) - MAX_STREAM_BUF_CHARS
+                        buf = (
+                            buf[:STREAM_BUF_HEAD_KEEP]
+                            + f"\n…[{dropped:,} chars of live stream truncated "
+                              f"for display]…\n"
+                            + buf[-(MAX_STREAM_BUF_CHARS - STREAM_BUF_HEAD_KEEP):]
+                        )
                     now = time.monotonic()
+                    # _stream_state keeps a reference to buf, which forces
+                    # `buf += chunk` to copy the whole buffer on every line;
+                    # throttle it to the same gate as the UI update.
                     if now - last_t >= CHAT_STREAM_MIN_INTERVAL:
+                        self._stream_state = (msg, buf)
                         self.call_from_thread(self._update_stream_chunk, msg, buf)
                         last_t = now
         except Exception as err:
@@ -3514,8 +3579,24 @@ class LogicTUI(App):
             injected.startswith("SCRIPT_RESULT:")
             or injected.startswith("system:[THREAD")
         ):
+            if injected.startswith("SCRIPT_RESULT:"):
+                # A multi-MB script dump used to be (a) mounted whole as a SYS
+                # bubble and (b) forwarded whole to LOGIC — freezing the UI
+                # and blowing up the model context. Cap both; LOGIC keeps the
+                # verdict header plus the tail of the output.
+                injected = _cap_text_middle(
+                    injected, MAX_SCRIPT_RESULT_TO_LOGIC,
+                    SCRIPT_RESULT_HEAD_KEEP,
+                    "…[middle of script output truncated by TUI]…",
+                )
             if SHOW_LOGIC_FEEDBACK:
-                self._mount_chat_msg("SYS", injected)
+                self._mount_chat_msg(
+                    "SYS",
+                    _cap_text_middle(
+                        injected, MAX_SYS_FEEDBACK_CHARS, 800,
+                        "…[SYS view truncated]…",
+                    ),
+                )
             self._queue_or_dispatch_prompt(injected)
             return
         self._mount_chat_msg("SYS", injected)
