@@ -65,6 +65,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.reactive import reactive
+from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import (
     Button,
@@ -287,6 +288,11 @@ MAX_SYS_FEEDBACK_CHARS = 6_000        # SYS feedback bubble cap
 MAX_ECHO_RESULT_CHARS = 16_000        # depth-2 non-streamed echo cap
 SINK_BATCH_LINES = 200                # sink lines merged per stream chunk
 
+# ── Copy system (F2 copy mode / alt+c / clipboard / disk mirror) ─────────────
+TRANSCRIPT_LOG_NAME = "tui_transcript.log"
+TRANSCRIPT_LOG_MAX_BYTES = 5 * 1024 * 1024  # rotate to .old at 5 MB
+COPY_CLIP_TIMEOUT = 3.0                     # seconds per external clipboard tool
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  STREAM PARSER & FENCE BUFFER
@@ -331,6 +337,105 @@ def _cap_text_middle(text: str, cap: int, head: int,
         return text[:cap]
     dropped = len(text) - head - tail
     return f"{text[:head]}\n{marker} — {dropped:,} chars dropped —\n{text[-tail:]}"
+
+
+# ── Copy system helpers ──────────────────────────────────────────────────────
+
+_TRANSCRIPT_LOG_LOCK = threading.Lock()
+
+
+def _osc52_copy(text: str) -> bool:
+    """Raw OSC 52 clipboard escape (last resort; terminal must support it)."""
+    try:
+        import base64
+        data = base64.b64encode(text.encode("utf-8", "replace")).decode("ascii")
+        if len(data) > 75_000:  # most terminals silently drop oversized payloads
+            return False
+        sys.stdout.write(f"\x1b]52;c;{data}\x1b\\")
+        sys.stdout.flush()
+        return True
+    except Exception:
+        return False
+
+
+def _copy_text_to_clipboard(text: str) -> str:
+    """Copy text via an external OS tool, then pyperclip. Returns channel or ''.
+
+    External tools are tried first because they are the channels that
+    reliably reach OTHER applications on Windows (clip.exe always works,
+    while OSC 52 depends on terminal support and silently no-ops on some).
+    """
+    if not text:
+        return ""
+    try:
+        if os.name == "nt":
+            payload = b"\xff\xfe" + text.encode("utf-16-le", "replace")  # BOM + UTF-16
+            proc = subprocess.run(
+                ["clip.exe"],
+                input=payload,
+                timeout=COPY_CLIP_TIMEOUT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if proc.returncode == 0:
+                return "clip.exe"
+        else:
+            for cmd in (
+                ["wl-copy"],
+                ["pbcopy"],
+                ["xclip", "-selection", "clipboard"],
+                ["xsel", "--clipboard", "--input"],
+            ):
+                try:
+                    proc = subprocess.run(
+                        cmd,
+                        input=text.encode("utf-8", "replace"),
+                        timeout=COPY_CLIP_TIMEOUT,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+                    continue
+                if proc.returncode == 0:
+                    return cmd[0]
+    except Exception:
+        pass
+    try:
+        import pyperclip  # optional dependency
+        pyperclip.copy(text)
+        return "pyperclip"
+    except Exception:
+        pass
+    return "osc52" if _osc52_copy(text) else ""
+
+
+def _mirror_transcript(sender: str, text: str) -> None:
+    """Append one message to tui_transcript.log in the working directory.
+
+    Rotates to tui_transcript.log.old at 5 MB. This is the plain-text copy
+    safety net: even if the TUI dies mid-freeze, every chat line is on disk
+    and selectable in any editor.
+    """
+    body = (text or "").replace("\r", "")
+    if not body.strip():
+        return
+    try:
+        path = os.path.join(os.getcwd(), TRANSCRIPT_LOG_NAME)
+        with _TRANSCRIPT_LOG_LOCK:
+            try:
+                if (
+                    os.path.exists(path)
+                    and os.path.getsize(path) > TRANSCRIPT_LOG_MAX_BYTES
+                ):
+                    os.replace(path, path + ".old")
+            except Exception:
+                pass
+            stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(path, "a", encoding="utf-8", errors="replace") as f:
+                f.write(f"[{stamp}] {sender}: {body}\n")
+    except Exception:
+        pass
 
 
 def parse_tool_json(raw: str):
@@ -2737,9 +2842,102 @@ class ToolPanel(Vertical):
             log.write(Text(f"  Folder '{tools_dir}' will be initialized when needed.", style="italic #737373"))
 
 
+class CopyModeScreen(ModalScreen):
+    """F2 copy mode: the full transcript in a read-only, mouse-selectable TextArea.
+
+    The live chat view captures the mouse for wheel scrolling, so native
+    drag-selection rarely works there (Windows Terminal needs Shift+drag).
+    This modal hands the mouse to a TextArea instead: drag = select,
+    Ctrl+C copies, and the selection survives scrolling. The OS clipboard
+    is filled through clip.exe / wl-copy / pbcopy / xclip / pyperclip, with
+    Textual's OSC 52 as the last resort for terminals without any of those.
+    """
+
+    BINDINGS = [
+        Binding("escape", "close_copy", "Close", show=False, priority=True),
+        Binding("f2", "close_copy", "Close", show=False, priority=True),
+        Binding("ctrl+c", "copy_selection", "Copy", show=False, priority=True),
+        Binding("ctrl+shift+c", "copy_selection", "Copy", show=False, priority=True),
+        Binding("ctrl+a", "select_all_copy", "Select all", show=False, priority=True),
+    ]
+
+    CSS = """
+    CopyModeScreen {
+        align: center middle;
+        background: #0d0d0de0;
+    }
+    #copy-title {
+        width: 98%;
+        height: 1;
+        background: #1a1a1a;
+        color: #a3a3a3;
+        padding: 0 1;
+    }
+    #copy-area {
+        width: 98%;
+        height: 1fr;
+        background: #111111;
+        border: round #333333;
+        padding: 0 1;
+    }
+    """
+
+    def __init__(self, transcript: str, **kwargs):
+        super().__init__(**kwargs)
+        self._transcript = transcript or "(chat is empty)"
+        self._copied = False
+
+    def compose(self) -> ComposeResult:
+        yield Static(
+            " COPY MODE · drag = select · ctrl+a = select all · ctrl+c = copy "
+            "(all if nothing selected) · esc/f2 = close ",
+            id="copy-title",
+        )
+        yield TextArea(
+            self._transcript,
+            read_only=True,
+            soft_wrap=True,
+            show_line_numbers=False,
+            id="copy-area",
+        )
+
+    def on_mount(self) -> None:
+        self.query_one("#copy-area", TextArea).focus()
+
+    def action_close_copy(self) -> None:
+        self.dismiss(self._copied)
+
+    def action_select_all_copy(self) -> None:
+        self.query_one("#copy-area", TextArea).select_all()
+
+    def action_copy_selection(self) -> None:
+        area = self.query_one("#copy-area", TextArea)
+        text = area.selected_text
+        if not text.strip():
+            area.select_all()
+            text = area.selected_text
+        if not text.strip():
+            return
+        title = self.query_one("#copy-title", Static)
+        try:
+            channel = self.app._clipboard_copy(text)
+        except Exception:
+            channel = ""
+        if channel:
+            self._copied = True
+            title.update(f" COPIED {len(text):,} chars via {channel} · esc to close ")
+        else:
+            title.update(" COPY FAILED — no clipboard channel available ")
+
+
 HELP_MARKDOWN = """\
 ### Keybindings
-* **Esc** : Focus the chat input box
+* **Esc** : Interrupt the running LOGIC turn (focus input when idle)
+* **F2** : Copy mode — full transcript in a scrollable text box:
+  drag to select · Ctrl+A select all · Ctrl+C copy selection · Esc close
+* **Alt + C** : Copy LOGIC's last reply straight to the clipboard
+* **tui_transcript.log** : every chat line is mirrored to this file next to
+  the app (5 MB rotation) — a copy safety net that works even if the TUI dies
 * **Ctrl + Q** : Exit application
 * **Ctrl + 1..5** : Jump to Chat / Hall / Memory / Tools / Help
 * **Enter** : Send message
@@ -2754,7 +2952,8 @@ HELP_MARKDOWN = """\
 * `/vinci <task>` : Dispatch to VINCI (OS/Code)
 * `/sage <task>` : Dispatch to SAGE (Web/Research)
 * `/both <task>` : Dispatch to both agents
-* `/stop vinci` / `/stop sage` / `/stop both` : Interrupt sub-agents
+* `/stop` : Interrupt LOGIC's current turn (kills a running script) + halt sub-agents
+* `/stop vinci` / `/stop sage` / `/stop both` : Interrupt sub-agents only
 * `/reset vinci` / `/reset sage` / `/reset both` : Wipe sub-agent memory
 
 Plain text such as `vinci check logs` is sent to LOGIC as normal chat.
@@ -3034,7 +3233,9 @@ class LogicTUI(App):
 
     BINDINGS = [
         ("ctrl+q", "quit", "Quit"),
-        ("escape", "focus_input", "Focus Input"),
+        ("escape", "focus_input", "Stop / Focus Input"),
+        ("f2", "copy_mode", "Copy mode"),
+        ("alt+c", "copy_last_reply", "Copy last reply"),
         ("ctrl+1", "switch_tab('pane-chat')", "Chat"),
         ("ctrl+2", "switch_tab('pane-hall')", "Hall"),
         ("ctrl+3", "switch_tab('pane-memory')", "Memory"),
@@ -3053,6 +3254,8 @@ class LogicTUI(App):
         self._input_len = 0
         self._stream_state: "tuple[ChatMessage, str] | None" = None
         self._stream_chunk_at = 0.0
+        self._active_stream_worker = None   # set by _dispatch_prompt / greeting
+        self._suppress_results_until = 0.0  # drop late SCRIPT_RESULT after /stop
 
     def compose(self) -> ComposeResult:
         yield TopBar(id="topbar")
@@ -3152,9 +3355,9 @@ class LogicTUI(App):
             return
         t = Text()
         if self.is_processing:
-            t.append(" logic is working — /stop halts agents · output keeps streaming ", style="#525252")
+            t.append(" logic is working — ESC or /stop interrupts · running scripts are killed ", style="#525252")
         else:
-            t.append(" enter send · shift+enter / alt+enter newline · esc focus · ctrl+1-5 tabs · /help ", style="#525252")
+            t.append(" enter send · shift+enter / alt+enter newline · f2 copy · esc focus · ctrl+1-5 tabs · /help ", style="#525252")
         if self._pending_prompts:
             t.append(f"· {len(self._pending_prompts)} queued ", style="bold #e5e5e5")
         if self._last_op_s is not None:
@@ -3168,8 +3371,130 @@ class LogicTUI(App):
             self._input_len = len(event.text_area.text)
             self._refresh_hint()
 
+    def _interrupt_generation(self) -> bool:
+        """Stop the active LOGIC turn (Esc while busy, or bare /stop).
+
+        - Cancels the stream worker: the pipeline stops consuming and the
+          partial reply is finalized with a "[generation cancelled]" note.
+        - Hard-kills a RUNNING script subprocess via logic.py's own plumbing
+          (ai.script_results + ai.gen_code_terminator) — logic.py stays stock.
+        - Discards pending SCRIPT_RESULTs and drops late results for 15 s so
+          an interrupted tool's result cannot silently start a new turn.
+
+        A long-running TOOL handler (e.g. search_net) runs inside LOGIC's
+        generator and cannot be force-killed from the TUI; the UI stays
+        responsive, its eventual result is discarded, and the next chunk
+        (if any) is never displayed.
+        """
+        if not self.is_processing:
+            return False
+        interrupted = False
+        worker = getattr(self, "_active_stream_worker", None)
+        if worker is not None:
+            try:
+                worker.cancel()
+                interrupted = True
+            except Exception:
+                pass
+        try:
+            ai = logic_ai
+            if ai is not None:
+                proc = getattr(ai, "script_results", None)
+                if proc is not None and proc.poll() is None:
+                    try:
+                        proc.kill()
+                        interrupted = True
+                    except Exception:
+                        pass
+                if interrupted:
+                    try:
+                        ai.gen_code_terminator = True
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        if interrupted:
+            _discard_pending_script_results()
+            self._suppress_results_until = time.monotonic() + 15.0
+            self._mount_chat_msg(
+                "SYS",
+                "⏹ Interrupted. Running script killed (if any); "
+                "pending tool results discarded. A blocked tool call "
+                "finishes in the background but its result is dropped.",
+            )
+        return interrupted
+
     def action_focus_input(self):
+        if self.is_processing and self._interrupt_generation():
+            return
         self.query_one("#prompt-input", ChatInputArea).focus()
+
+    # ── Copy system (restored) ───────────────────────────────────────────────
+
+    def _clipboard_copy(self, text: str) -> str:
+        """Best-effort OS clipboard write. Returns the channel used, '' on failure.
+
+        Order: external tools (clip.exe / wl-copy / pbcopy / xclip / xsel —
+        reliable everywhere) → pyperclip → Textual OSC 52 (terminal support).
+        """
+        if not text:
+            return ""
+        channel = _copy_text_to_clipboard(text)
+        if channel:
+            return channel
+        try:
+            self.copy_to_clipboard(text)
+            return "osc52"
+        except Exception:
+            return ""
+
+    def _build_transcript_text(self) -> str:
+        lines = []
+        try:
+            for row in self._chat().children:
+                msg = getattr(row, "message", row)
+                if not isinstance(msg, ChatMessage):
+                    continue
+                text = (msg.text_content or "").strip()
+                if not text:
+                    continue
+                lines.append(f"[{msg.timestamp}] {msg.sender}: {text}")
+        except Exception:
+            pass
+        return "\n\n".join(lines) if lines else "(chat is empty)"
+
+    def action_copy_mode(self) -> None:
+        self.push_screen(CopyModeScreen(self._build_transcript_text()))
+
+    def action_copy_last_reply(self) -> None:
+        last_text = ""
+        try:
+            rows = list(self._chat().children)
+        except Exception:
+            rows = []
+        for row in reversed(rows):
+            msg = getattr(row, "message", row)
+            if isinstance(msg, ChatMessage) and msg.sender == "LOGIC":
+                t = (msg.text_content or "").strip()
+                if t:
+                    last_text = t
+                    break
+        if not last_text:
+            self._mount_chat_msg(
+                "SYS", "Nothing to copy — no LOGIC reply in the chat yet."
+            )
+            return
+        channel = self._clipboard_copy(last_text)
+        if channel:
+            self._mount_chat_msg(
+                "SYS",
+                f"Copied LOGIC's last reply ({len(last_text):,} chars) via {channel}.",
+            )
+        else:
+            self._mount_chat_msg(
+                "SYS",
+                "Clipboard copy failed — press F2 and copy manually (ctrl+a, ctrl+c).",
+            )
 
     def action_switch_tab(self, pane_id: str) -> None:
         self._set_tab(pane_id)
@@ -3227,6 +3552,8 @@ class LogicTUI(App):
         self._chat().mount(ChatRow(msg))
         self._prune_chat()
         self._scroll_chat_end(force=False)
+        if (text or "").strip():
+            _mirror_transcript(sender, text)
         return msg
 
     def _set_processing(self, value: bool) -> None:
@@ -3261,6 +3588,7 @@ class LogicTUI(App):
     @work(exclusive=True, thread=True, group="logic_stream")
     def _send_system_greeting(self) -> None:
         worker = get_current_worker()
+        self._active_stream_worker = worker
         self.call_from_thread(self._set_processing, True)
         msg = self.call_from_thread(self._mount_chat_msg, "LOGIC", "")
 
@@ -3283,6 +3611,8 @@ class LogicTUI(App):
         try:
             self._stream_pipeline(msg, prompt, worker)
         finally:
+            if self._active_stream_worker is worker:
+                self._active_stream_worker = None
             self.call_from_thread(self._set_processing, False)
             self.call_from_thread(self._set_spinner, "")
             if not USE_REAL:
@@ -3291,8 +3621,9 @@ class LogicTUI(App):
     @work(exclusive=True, thread=True, group="logic_stream")
     def _dispatch_prompt(self, prompt: str) -> None:
         worker = get_current_worker()
+        self._active_stream_worker = worker
         self.call_from_thread(self._set_processing, True)
-        self.call_from_thread(self._set_spinner, "LOGIC is working...")
+        self.call_from_thread(self._set_spinner, "LOGIC is working… (Esc to stop)")
         msg = self.call_from_thread(self._mount_chat_msg, "LOGIC", "")
 
         if USE_REAL and _stop_voice:
@@ -3305,17 +3636,21 @@ class LogicTUI(App):
             self._stream_pipeline(msg, prompt, worker)
             self.call_from_thread(self._update_hud)
         finally:
+            if self._active_stream_worker is worker:
+                self._active_stream_worker = None
             self.call_from_thread(self._set_processing, False)
             self.call_from_thread(self._flush_pending_prompts)
 
     def _stream_pipeline(self, msg: ChatMessage, prompt: str, worker):
         buf = ""
         last_t = 0.0
+        stream = None
         try:
             if logic_ai is None:
                 buf = "[Stream Error: logic_ai is not available]"
             else:
-                for chunk in logic_ai.call_logic(prompt):
+                stream = logic_ai.call_logic(prompt)
+                for chunk in stream:
                     if worker.is_cancelled:
                         buf += "\n[generation cancelled]"
                         break
@@ -3342,10 +3677,20 @@ class LogicTUI(App):
                         last_t = now
         except Exception as err:
             buf += f"\n[Stream Error: {err}]"
+        finally:
+            # Close the generator so a cancelled turn tears down the stream
+            # deterministically instead of waiting for GC.
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
 
         self.call_from_thread(self._finalize_stream, msg, buf)
         self.call_from_thread(self._set_spinner, "")
-        self._stream_state = None
+        cur = self._stream_state
+        if cur is not None and cur[0] is msg:
+            self._stream_state = None
 
     def _update_stream_chunk(self, msg: ChatMessage, buf: str, force: bool = False):
         if msg is None:
@@ -3391,6 +3736,9 @@ class LogicTUI(App):
                 msg.finalize()
             except Exception:
                 pass
+        final_text = (msg.text_content or "").strip()
+        if final_text:
+            _mirror_transcript(msg.sender, final_text)
 
     def _set_spinner(self, msg: str):
         sp = self.query_one("#spinner-slot", StatusSpinner)
@@ -3575,6 +3923,14 @@ class LogicTUI(App):
         # SCRIPT_RESULT / THREAD results are already shown live via the sink.
         # Still feed them to Logic for the feedback loop. Optionally also mount
         # as SYS so you can inspect exactly what Logic receives.
+        if (
+            isinstance(injected, str)
+            and injected.startswith("SCRIPT_RESULT:")
+            and time.monotonic() < getattr(self, "_suppress_results_until", 0.0)
+        ):
+            # Interrupted recently: drop the in-flight tool's late result so
+            # it cannot silently kick off a new LOGIC turn.
+            return
         if isinstance(injected, str) and (
             injected.startswith("SCRIPT_RESULT:")
             or injected.startswith("system:[THREAD")
@@ -3775,6 +4131,13 @@ class LogicTUI(App):
         )
         if low == "/vinci" or low == "/sage" or low == "/both":
             self._mount_chat_msg("SYS", f"Usage: {low} <task>")
+            return
+        if low == "/stop":
+            # Bare /stop: halt the main LOGIC turn (stream + running script)
+            # AND signal the sub-agents. Targeted /stop vinci|sage falls
+            # through to the hall handler below.
+            self._interrupt_generation()
+            self.execute_hall_command("/stop")
             return
         if low in ("/stop", "/reset") or any(
             low.startswith(p + " ") or low.startswith(p + "\t") for p in hall_cmds

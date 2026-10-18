@@ -1,5 +1,4 @@
 Pillow
-PySide6
 beautifulsoup4
 chromadb
 comtypes
@@ -10,7 +9,6 @@ google-api-python-client
 groq
 numpy
 openai
-piper
 playwright
 plyer
 psutil
@@ -28,3 +26,4 @@ tinyfish
 uiautomation
 webrtcvad
 wmi
+piper-tts
