@@ -111,95 +111,109 @@ MODEL_NAME_GROQ = os.getenv("MODEL_NAME_GROQ", "openai/gpt-oss-120b")
 
 
 the_console = Console()
-
-# ===== Omniroute bootstrap =====
+# ===== Router bootstrap (9router, headless) =====
 import socket
-import subprocess
-import sys
-import time
-import atexit
+import win32job, win32api, win32con
+IS_WORKER = '--worker' in sys.argv   # worker process never manages the router
+_router_job = None
+ROUTER_URL  = "http://127.0.0.1:20128/v1"
+ROUTER_HOST = "127.0.0.1"
+ROUTER_PORT = 20128
+ROUTER_CMD  = "9router"
+ROUTER_NAME = "9Router"
+ROUTER_START_TIMEOUT = 45
+LAUNCH_COOLDOWN = 45   # never spawn twice within this window (cross-process)
 
-OMNROUTE_URL = "http://127.0.0.1:20128/v1"
-OMNROUTE_HOST = "127.0.0.1"
-OMNROUTE_PORT = 20128
+MARKER = os.path.join(tempfile.gettempdir(), "logic_router_launch.marker")
 
-OMNROUTE_START_TIMEOUT = 10
-OMNROUTE_POLL_INTERVAL = 0.1
-
-omniroute_proc = None
-
-
-def _is_omniroute_running():
+def _is_router_running():
     try:
-        with socket.create_connection(
-            (OMNROUTE_HOST, OMNROUTE_PORT),
-            timeout=0.2
-        ):
+        with socket.create_connection((ROUTER_HOST, ROUTER_PORT), timeout=0.2):
             return True
     except OSError:
         return False
+    
+def _kill_on_close_job():
+    global _router_job
+    if _router_job is None:
+        j = win32job.CreateJobObject(None, "")
+        info = win32job.QueryInformationJobObject(
+            j, win32job.JobObjectExtendedLimitInformation)
+        info["BasicLimitInformation"]["LimitFlags"] |= \
+            win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        win32job.SetInformationJobObject(
+            j, win32job.JobObjectExtendedLimitInformation, info)
+        _router_job = j
+    return _router_job
 
+def _adopt_running_router():
+    # VBS-started router isn't our child — drag it into the job anyway
+    import win32com.client
+    wmi = win32com.client.GetObject("winmgmts://./root/cimv2")
+    for p in wmi.ExecQuery(
+        "SELECT ProcessId, CommandLine FROM Win32_Process WHERE Name='node.exe'"
+    ):
+        if '9router' in (p.CommandLine or ''):
+            try:
+                h = win32api.OpenProcess(
+                    win32con.PROCESS_SET_QUOTA | win32con.PROCESS_TERMINATE,
+                    False, int(p.ProcessId))
+                win32job.AssignProcessToJobObject(_kill_on_close_job(), h)
+            except Exception:
+                pass
 
-def _wait_for_omniroute():
-    deadline = time.monotonic() + OMNROUTE_START_TIMEOUT
+def _launch_router_hidden():
+    with open(MARKER, "w") as f:
+        f.write(str(time.time()))
+    print(f"[{ROUTER_NAME}] Launching hidden...")
+    proc = subprocess.Popen(
+        ["cmd", "/c", ROUTER_CMD, "--skip-update", "--no-browser"],
+        creationflags=subprocess.CREATE_NO_WINDOW,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    # from now on, this process AND any children it spawns die with LOGIC
+    win32job.AssignProcessToJobObject(_kill_on_close_job(), int(proc._handle))
 
+def _wait_for_router():
+    deadline = time.monotonic() + ROUTER_START_TIMEOUT
     while time.monotonic() < deadline:
-        if _is_omniroute_running():
+        if _is_router_running():
             return True
-
-        time.sleep(OMNROUTE_POLL_INTERVAL)
-
+        time.sleep(0.25)
     return False
 
+def stop_router():
+    ps_cmd = (
+        "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | "
+        "Where-Object { $_.CommandLine -match '9router' } | "
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+    )
+    subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd],
+                   capture_output=True)
 
-def ensure_omniroute():
-    global omniroute_proc
+    # fallback: catch a survivor whose cmdline doesn't mention 9router
+    out = subprocess.run(["netstat", "-ano", "-p", "TCP"],
+                         capture_output=True, text=True).stdout
+    pids = {l.split()[-1] for l in out.splitlines()
+            if f":{ROUTER_PORT}" in l and "LISTENING" in l}
+    for pid in pids:
+        subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True)
 
-    if _is_omniroute_running():
-        print("[Omniroute] Already active — skipping startup.")
-        return
-
-    print("[Omniroute] Not detected. Starting omniroute...")
-
-    try:
-        omniroute_proc = subprocess.Popen(
-            ["omniroute"],
-            shell=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-        )
-
-    except FileNotFoundError:
-        print("[Omniroute] ERROR: 'omniroute' command not found.")
-        sys.exit(1)
-
-    if _wait_for_omniroute():
-        print("[Omniroute] Ready.")
+    print(f"[{ROUTER_NAME}] Stopped.")
+        
+if not IS_WORKER:
+    if not _is_router_running():
+        _launch_router_hidden()
+        if not _wait_for_router():
+            raise RuntimeError(f"{ROUTER_NAME} failed to start")
     else:
-        print(
-            f"[Omniroute] ERROR: Timed out after "
-            f"{OMNROUTE_START_TIMEOUT}s."
-        )
+        print(f"[{ROUTER_NAME}] Already active.")
+        _adopt_running_router()
+    # NO atexit, NO watchdog — the job handle IS the lifecycle now
 
-        if omniroute_proc:
-            omniroute_proc.terminate()
-
-        sys.exit(1)
-
-
-def cleanup_omniroute():
-    global omniroute_proc
-
-    if omniroute_proc is not None and omniroute_proc.poll() is None:
-        print("[Omniroute] Shutting down...")
-        omniroute_proc.terminate()
-        omniroute_proc = None
-
-
-ensure_omniroute()
-atexit.register(cleanup_omniroute)
-# ===== End Omniroute bootstrap =====
+# ===== End router bootstrap =====
 
 client = OpenAI(
     api_key=API_KEY,
@@ -328,17 +342,6 @@ class Base_AI():
             system_instruction=build_system_prompt(),
             temperature=0.3,
             top_p=0.9,
-            # Add this block to pass safety settings to Gemini via the OpenAI SDK
-
-            extra_body={
-                "safetySettings": [
-                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-                    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-                    {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"}
-                ]
-            }
         )
 
         
@@ -474,7 +477,7 @@ class Base_AI():
         if activity_report:
             final_prompt += f'\n{activity_report}'
 
-        if not prompt.startswith("SCRIPT_RESULT:") or not prompt.startswith("relevant_memory:"):
+        if not prompt.startswith("SCRIPT_RESULT:") and not prompt.startswith("relevant_memory:"):
             possible_tool = guess_tool(f'{prompt}')
 
         if possible_tool:

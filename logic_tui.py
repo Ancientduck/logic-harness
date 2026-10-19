@@ -3357,7 +3357,7 @@ class LogicTUI(App):
         if self.is_processing:
             t.append(" logic is working — ESC or /stop interrupts · running scripts are killed ", style="#525252")
         else:
-            t.append(" enter send · shift+enter / alt+enter newline · f2 copy · esc focus · ctrl+1-5 tabs · /help ", style="#525252")
+            t.append(" enter send · shift+enter / alt+enter newline · f2 copy · esc focus ", style="#525252")
         if self._pending_prompts:
             t.append(f"· {len(self._pending_prompts)} queued ", style="bold #e5e5e5")
         if self._last_op_s is not None:
