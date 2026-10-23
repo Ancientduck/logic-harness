@@ -162,7 +162,7 @@ sys_prompt_vinci = get_prompt('Vinci')
 sys_prompt_sage = get_prompt("Sage")
 
 MODEL_VINCI = "gemini/gemini-3.5-flash-lite"
-MODEL_SAGE = "freeinference/glm-5.3-flash"
+MODEL_SAGE = "fi/glm-5.3-flash"
 
 client = OpenAI(
     api_key=API_KEY,

@@ -820,7 +820,7 @@
                         <line x1="12" y1="8" x2="12" y2="12"></line>
                         <line x1="12" y1="16" x2="12.01" y2="16"></line>
                     </svg>
-                    <span>Complete Zero-Coding Setup Guide (Python, Node/NPM, OmniRoute, Everything)</span>
+                    <span>Complete Zero-Coding Setup Guide (Python, Node/NPM, 9Router, Everything)</span>
                 </div>
                 <span class="guide-badge">Read This If Starting Fresh</span>
             </div>
@@ -833,7 +833,7 @@
                         <span>Install Python (Required for Logic)</span>
                     </div>
                     <div class="step-text">
-                        1. Go to <a href="https://www.python.org/downloads/" target="_blank" style="color:var(--accent-cyan); font-weight:600;">python.org/downloads</a> and download Python 3.11 or newer.<br>
+                        1. Go to <a href="https://www.python.org/downloads/" target="_blank" style="color:var(--accent-cyan); font-weight:600;">python.org/downloads</a> and download Python 3.13.12 or newer.<br>
                         2. <strong>CRITICAL:</strong> When running the installer, check the box that says <strong>"Add python.exe to PATH"</strong> before clicking Install.
                     </div>
                     <div class="step-code">
@@ -858,21 +858,21 @@
                     <div class="step-text" style="font-size:0.75rem;">Run this in Command Prompt to verify Node and NPM.</div>
                 </div>
 
-                <!-- Step 3: OmniRoute Gateway -->
+                <!-- Step 3: 9Router Gateway -->
                 <div class="step-box">
                     <div class="step-heading">
                         <span class="step-num">3</span>
-                        <span>Install &amp; Start OmniRoute</span>
+                        <span>Install &amp; Start 9Router</span>
                     </div>
                     <div class="step-text">
-                        Open Command Prompt (Press <code>Win + R</code>, type <code>cmd</code>, press Enter) and install OmniRoute globally via NPM:
+                        Open Command Prompt (Press <code>Win + R</code>, type <code>cmd</code>, press Enter) and install 9Router globally via NPM:
                     </div>
                     <div class="step-code">
-                        <span>npm install -g omniroute</span>
+                        <span>npm install -g 9router</span>
                     </div>
                     <div class="step-text">Then launch it by typing:</div>
                     <div class="step-code">
-                        <span>omniroute start</span>
+                        <span>9router</span>
                     </div>
                     <div class="step-text" style="font-size:0.75rem;">It will open at <code>http://localhost:20128</code>.</div>
                 </div>
@@ -895,14 +895,14 @@
         <!-- DASHBOARD GRID -->
         <div class="cards-grid">
 
-            <!-- Card 1: OmniRoute Gateway -->
+            <!-- Card 1: 9Router Gateway -->
             <div class="glass-card">
                 <div class="card-header">
                     <div class="card-title-group">
                         <span class="card-icon">
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m4.93 4.93 4.24 4.24"/><path d="m14.83 9.17 4.24-4.24"/><path d="m14.83 14.83 4.24 4.24"/><path d="m9.17 14.83-4.24 4.24"/></svg>
                         </span>
-                        <span class="card-title">OmniRoute Master Gateway</span>
+                        <span class="card-title">9Router Master Gateway</span>
                     </div>
                     <a href="http://localhost:20128" target="_blank" class="card-link">Local Console &nearr;</a>
                 </div>
@@ -915,7 +915,7 @@
                 <div class="field-group">
                     <div class="field-label">
                         <span>API_KEY <span class="subnote">Gateway Auth</span></span>
-                        <button class="btn-verify" onclick="verifyOmniRoute()">Check Key</button>
+                        <button class="btn-verify" onclick="verify9Router()">Check Key</button>
                     </div>
                     <div class="input-wrapper">
                         <input type="password" id="API_KEY" class="text-input" placeholder="sk-...">
@@ -928,7 +928,7 @@
                             </button>
                         </div>
                     </div>
-                    <div id="omniroute-verify-status"></div>
+                    <div id="9router-verify-status"></div>
                 </div>
 
                 <div class="field-group">
@@ -947,11 +947,11 @@
                     </div>
                     <ol style="margin-bottom: 12px;">
                         <li>Go to <a href="https://aistudio.google.com/apikey" target="_blank" style="color:var(--accent-cyan); text-decoration: underline;">Google AI Studio</a> and check available models on their official site.</li>
-                        <li>If the localhost link below doesn't work, open a terminal or command prompt and type <code>omniroute</code> to launch the OmniRoute server first.</li>
-                        <li>Open your OmniRoute Gemini provider page at <a href="http://localhost:20128/dashboard/providers/gemini" target="_blank" style="color:var(--accent-cyan); text-decoration: underline;">OmniRoute Gemini Provider</a> (or go to <strong>Providers</strong>, search for <strong>gemini</strong>, click on Gemini / Google AI Studio).</li>
+                        <li>If the localhost link below doesn't work, open a terminal or command prompt and type <code>9router</code> to launch the 9Router server first.</li>
+                        <li>Open your 9Router Gemini provider page at <a href="http://localhost:20128/dashboard/providers/gemini" target="_blank" style="color:var(--accent-cyan); text-decoration: underline;">9Router Gemini Provider</a> (or go to <strong>Providers</strong>, search for <strong>gemini</strong>, click on Gemini / Google AI Studio).</li>
                         <li>Click the add button and paste your Google AI Studio API key.</li>
-                        <li>Go to available models in OmniRoute and copy any available alias (the recommended free default model ID is <code>gemini/gemini-3.5-flash-lite</code>), and paste the model alias into the <strong>MODEL</strong> field above.</li>
-                        <li>Go to the OmniRoute <a href="http://localhost:20128/dashboard/api-manager" target="_blank" style="color:var(--accent-cyan); text-decoration: underline;">API Manager</a>, create an API key, and paste it into the <strong>API_KEY</strong> field above.</li>
+                        <li>Go to available models in 9Router and copy any available alias (the recommended free default model ID is <code>gemini/gemini-3.5-flash-lite</code>), and paste the model alias into the <strong>MODEL</strong> field above.</li>
+                        <li>Go to the 9Router <a href="http://localhost:20128/dashboard" target="_blank" style="color:var(--accent-cyan); text-decoration: underline;">API Manager</a>, Copy(or create) the API key, and paste it into the <strong>API_KEY</strong> field above.</li>
                     </ol>
                     <div style="font-size: 0.8rem; color: #a1a1aa; border-top: 1px dashed rgba(255,255,255,0.1); padding-top: 8px;">
                         <em>💡 Once LOGIC boots on your machine with Gemini Flash, you can speak directly to LOGIC to guide you through setting up advanced custom model combos, OpenRouter, or Anthropic.</em>
@@ -1110,11 +1110,11 @@
                     </div>
                 </div>
 
-                <!-- OmniRoute Gateway Service -->
+                <!-- 9Router Gateway Service -->
                 <div class="field-group" style="margin-top:0.5rem;">
                     <div class="field-label">
-                        <span>OmniRoute Gateway (Port 20128)</span>
-                        <span id="badge-port-omniroute" class="verify-badge">Untested</span>
+                        <span>9Router Gateway (Port 20128)</span>
+                        <span id="badge-port-9router" class="verify-badge">Untested</span>
                     </div>
                     <div style="font-size:0.75rem; color:var(--text-faint);">
                         Local multi-provider LLM gateway endpoint at <code>http://localhost:20128</code>.
@@ -1519,25 +1519,25 @@ MODEL_NAME_GROQ=${vals.MODEL_NAME_GROQ || 'openai/gpt-oss-120b'}
             }
         }
 
-        async function verifyOmniRoute() {
+        async function verify9Router() {
             const key = document.getElementById('API_KEY').value.trim();
-            const badge = document.getElementById('omniroute-verify-status');
+            const badge = document.getElementById('9router-verify-status');
             const baseUrl = document.getElementById('BASE_URL').value.trim() || 'http://localhost:20128/v1';
-            badge.innerHTML = '<span class="verify-badge testing">Checking OmniRoute...</span>';
+            badge.innerHTML = '<span class="verify-badge testing">Checking 9Router...</span>';
             try {
                 const res = await fetch(`${baseUrl}/models`, {
                     headers: key ? { 'Authorization': `Bearer ${key}` } : {}
                 });
                 if (res.ok) {
                     badge.innerHTML = '<span class="verify-badge ok">&check; Active &amp; Authorized</span>';
-                    addLog('OmniRoute Gateway verified online.', 'success');
+                    addLog('9Router Gateway verified online.', 'success');
                 } else {
                     badge.innerHTML = `<span class="verify-badge err">&cross; HTTP ${res.status}</span>`;
-                    addLog(`OmniRoute returned status ${res.status}`, 'warn');
+                    addLog(`9Router returned status ${res.status}`, 'warn');
                 }
             } catch (e) {
                 badge.innerHTML = `<span class="verify-badge err">&cross; Connection Failed (Is service running?)</span>`;
-                addLog(`OmniRoute unreachable at ${baseUrl}`, 'error');
+                addLog(`9Router unreachable at ${baseUrl}`, 'error');
             }
         }
 
@@ -1593,7 +1593,7 @@ MODEL_NAME_GROQ=${vals.MODEL_NAME_GROQ || 'openai/gpt-oss-120b'}
         function checkAllPorts() {
             const port = document.getElementById('find_file_port').value.trim() || '80';
             probePort(`http://127.0.0.1:${port}/`, 'badge-port-everything', `Everything (Port ${port})`);
-            probePort('http://127.0.0.1:20128/', 'badge-port-omniroute', 'OmniRoute (Port 20128)');
+            probePort('http://127.0.0.1:20128/', 'badge-port-9router', '9Router (Port 20128)');
         }
 
         // FIELD UTILITIES

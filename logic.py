@@ -485,6 +485,19 @@ class Base_AI():
 
         final_prompt += f'\n{prompt}'
 
+        # Expose what was actually sent to the model so the TUI transcript
+        # can log memory / activity / tool_reminder context (not just the
+        # raw user string).
+        try:
+            if isinstance(prompt, list):
+                self.last_sent_prompt = (
+                    (final_prompt.strip() + '\n') if final_prompt.strip() else ''
+                ) + '[multimodal prompt: ' + str(len(prompt)) + ' part(s)]'
+            else:
+                self.last_sent_prompt = final_prompt
+        except Exception:
+            self.last_sent_prompt = final_prompt if isinstance(final_prompt, str) else str(prompt)
+
         if self.debug_prompt:
             print(final_prompt)
 

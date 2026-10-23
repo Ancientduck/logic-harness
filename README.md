@@ -23,7 +23,7 @@ LOGIC acts as an autonomous operational shell connecting local/cloud LLMs with n
           |                         |                         |
           v                         v                         v
 +-------------------+     +-------------------+     +-------------------+
-|  OmniRoute Gateway|     |   Multi-Agent     |     |   Tool Engine     |
+|   9Router Gateway |     |   Multi-Agent     |     |   Tool Engine     |
 | (Multi-LLM Stream)|     |   (Vinci / Sage)  |     | (logic_tools &    |
 |                   |     |   via Logic Hall  |     |  logic_skills)    |
 +-------------------+     +-------------------+     +-------------------+
@@ -34,7 +34,7 @@ LOGIC acts as an autonomous operational shell connecting local/cloud LLMs with n
 ## Key Subsystems
 
 ### 1. Unified Gateway & Model Routing
-- **OmniRoute Lifecycle Management**: Auto-spawns and monitors local OmniRoute gateway instances (`localhost:20128`) on launch.
+- **9Router Lifecycle Management**: Auto-spawns and monitors local 9Router gateway instances (`localhost:20128`) on launch.
 - **Streaming Response Pipeline**: Low-latency token-level streaming with automated reasoning effort controls.
 - **Groq & Cloud Fallbacks**: Autonomous history compacting and context summarization agents with automated fallback routines.
 
@@ -95,7 +95,7 @@ D:/Ai/logic/
 |---------|--------|
 | `/kill` | Instantly terminates the actively running generated Python script |
 | `/v` | Toggle voice input mode on/off |
-| `/compact` | Compacts conversational history via Groq/OmniRoute summarizer |
+| `/compact` | Compacts conversational history via Groq/9Router summarizer |
 | `/save` | Forces an immediate conversation session summary save |
 | `/hall` | Inspects status and unread buffers of Vinci and Sage |
 | `/stop <vinci/sage/both` | Sends an emergency stop signal to background workers |

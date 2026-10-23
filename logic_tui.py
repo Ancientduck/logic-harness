@@ -3650,7 +3650,30 @@ class LogicTUI(App):
                 buf = "[Stream Error: logic_ai is not available]"
             else:
                 stream = logic_ai.call_logic(prompt)
+                _ctx_logged = False
                 for chunk in stream:
+                    # Once call_logic has built final_prompt, mirror the full
+                    # model-bound context (memory / activity / tool_reminder)
+                    # into the transcript — the chat UI only shows the raw user
+                    # string and the reply.
+                    if not _ctx_logged:
+                        _ctx_logged = True
+                        try:
+                            ctx = getattr(logic_ai, "last_sent_prompt", None)
+                            if isinstance(ctx, str) and ctx.strip():
+                                # Avoid duplicating pure SCRIPT_RESULT / system
+                                # echoes that already appear as SYS feedback.
+                                raw = prompt if isinstance(prompt, str) else ""
+                                enriched = (
+                                    ctx.strip() != raw.strip()
+                                    or "relevant_memory:" in ctx
+                                    or "tool_reminder:" in ctx
+                                    or "[ACTIVITY]" in ctx
+                                )
+                                if enriched:
+                                    _mirror_transcript("PROMPT", ctx)
+                        except Exception:
+                            pass
                     if worker.is_cancelled:
                         buf += "\n[generation cancelled]"
                         break
