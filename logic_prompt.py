@@ -1,20 +1,31 @@
 from pathlib import Path
 import os
 import requests
+import re
 usable_scripts = []
+manual_scripts = []
+
+def _script_needs_args(file_path):
+    try:
+        content = Path(file_path).read_text(encoding='utf-8')
+    except Exception:
+        return False
+    patterns = [r'\bsys\.argv\b', r'\bargparse\b', r'\bgetopt\b', r'OptionParser', r'click\.', r'fire\.Fire']
+    return any(re.search(p, content) for p in patterns)
 
 def put_scripts():
     folder = Path('logic_tools')
     py_files = list(folder.glob('*.py'))
-
+    global usable_scripts, manual_scripts
     for file in py_files:
-        if file:
-            usable_scripts.append(file.name)
+        if file.name in manual_scripts:
+            continue
+        if _script_needs_args(file):
+            manual_scripts.append(file.name)
         else:
-            usable_scripts.append('None')
-
-
+            usable_scripts.append(file.name)
 put_scripts()
+
 
 SKILLS_DIR = Path(__file__).resolve().parent / "logic_skills"
 
@@ -87,23 +98,15 @@ Available skills ({SKILLS_DIR}):
 
 <tools>
 Output ONE per turn: <tool>{{"name":"name","args":[...]}}</tool>
-
-
 chat_monitor (args:["inbox_name"]) → connect Messenger inbox
 read_skill (["name"]) → Read a skill.md file from available skills using the folder name
 save (args:["name.ext"]) → save last code to logic_tools/
 search_net (args:["query"]) → factual/technical lookup. Use before debugging, scraping sites, or YT transcripts.
 set_reminder (args:["text","minutes"]) → background timer
 read_credential (args:['filename']) → read files containing tokens: {", ".join(f for f in os.listdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), "logic_tools", "oauth_token_files")) if f.endswith(".json"))} read credential when it's relevant
-memory_manager (args:["save / delete / search / core / set / all / stats","text"]) → tiered SQLite+FTS memory
-  save: ["save","text --type episodic|semantic|procedural|plan --imp 0.0-1.0 --exp YYYY-MM-DD|never"]
-  search: ["search","query --type <t> --min <imp>"]
-  set: ["set","<id> --imp <f> --type <t> --exp <days|never>"]
-  core: imp≥0.8 candidates | all: full dump | stats: summary
 dispatch (args:[["vinci"|"sage"|"both","task"],...]) → async parallel subtasks to VINCI & SAGE. They report back to you.
   Reset: [["reset","vinci"|"sage"]] (rejected if BUSY). No cross-reset memory.
   Rules: independent subtasks only; never same file for two agents; YOU do final quality; peers never user-facing; no trivial one-liners.
-  
 
 AVAILABLE SCRIPTS: {', '.join(usable_scripts) if usable_scripts else 'None.'}
 - scrape_site.py (['url'])
@@ -114,8 +117,10 @@ AVAILABLE SCRIPTS: {', '.join(usable_scripts) if usable_scripts else 'None.'}
 - click_phone_button.py (["name"])
 - calendar_add_multiple_events.py ([["YYYY-MM-DD","HH:00-HH:MM","Name","color_id"]])
 - find_file.py (["file_name"]) → returns exact path using everything app API
+- read_file.py (['path']) → auto-detect encoding, read file content
 - read_messenger_unread_messages.py (no args = all unread; ["name"] = targeted inbox, last 10 msgs)
 - get_schedule.py (["YYYY-MM-DD"]) → calendar events (defaults to today)
+
 </tools>
 
 <tech_ref>
@@ -154,4 +159,3 @@ experimental = """
   ["click", "button_name", "left|right"] → Click a button. Returns new buttons if any appeared.
 
 """
-

@@ -1,3 +1,11 @@
+import psutil
+psutil.Process().nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
+import os
+# Cap threads to prevent CPU spikes affecting game performance
+os.environ["OMP_NUM_THREADS"] = "2"
+os.environ["MKL_NUM_THREADS"] = "2"
+os.environ["OPENBLAS_NUM_THREADS"] = "2"
+
 import threading
 import sounddevice as sd
 import numpy as np
@@ -5,24 +13,39 @@ import queue
 import time
 import re
 import tkinter as tk
-from piper import PiperVoice, SynthesisConfig
+import ptts
+ptts.set_num_threads(1)
 from speech_overlay import LOGICOverlay
 
-PIPER_CMD = "piper"
+MODEL = "hf://gradium/phonon-31m-en"
+VOICE = "Spencer"
+QUANT = "q4_0"
+SAMPLE_RATE = 24000
+VOICE_SPEED = 1.0  # Speed multiplier: 1.0 default, 1.2 is 20% faster (pitch preserved)
 
+def time_stretch(audio_arr, rate):
+    """Time-stretch without altering pitch (OLA method)."""
+    if rate == 1.0 or len(audio_arr) == 0:
+        return audio_arr
+    win_size = 1024
+    syn_hop = 256
+    ana_hop = int(syn_hop * rate)
+    out_len = int(len(audio_arr) / rate)
+    out = np.zeros(out_len + win_size, dtype=np.float32)
+    win = np.hanning(win_size).astype(np.float32)
 
-# MODEL = "logic_voices/miro/en_GB-miro.onnx"
-# CONFIG = "logic_voices/miro/en_GB-miro.onnx.json"
-# SPEAKER = 0
+    in_pos = 0
+    out_pos = 0
+    while in_pos + win_size <= len(audio_arr) and out_pos + win_size <= len(out):
+        out[out_pos : out_pos + win_size] += audio_arr[in_pos : in_pos + win_size] * win
+        out_pos += syn_hop
+        in_pos += ana_hop
 
-MODEL = "logic_voices/main_voice/en_US-libritts_r-medium.onnx"
-CONFIG = "logic_voices/main_voice/en_US-libritts_r-medium.onnx.json"
-SPEAKER = 217
+    # Normalize gain change from overlap-add
+    norm_factor = syn_hop / (win_size / 2)
+    return (out[:out_len] * norm_factor).astype(np.float32)
 
-
-voice = PiperVoice.load(MODEL, CONFIG)
-SAMPLE_RATE = voice.config.sample_rate
-synthesis_config = SynthesisConfig(speaker_id=SPEAKER)
+tts_engine = ptts.TTS(MODEL, lang="en", quant=QUANT)
 
 speak_queue = queue.Queue()
 overlay_queue = queue.Queue()
@@ -39,9 +62,20 @@ gui_command_queue = queue.Queue()
 
 def generate_audio(text):
     chunks = []
-    for chunk in voice.synthesize(text, synthesis_config):
-        chunks.append(np.frombuffer(chunk.audio_int16_bytes, dtype=np.int16))
-    return np.concatenate(chunks) if chunks else np.array([], dtype=np.int16)
+    try:
+        for chunk in tts_engine.stream(text, voice=VOICE):
+            arr = np.asarray(chunk)
+            if arr.dtype != np.float32:
+                arr = arr.astype(np.float32)
+            chunks.append(arr)
+        if chunks:
+            full = np.concatenate(chunks)
+            if VOICE_SPEED != 1.0:
+                full = time_stretch(full, VOICE_SPEED)
+            return full
+    except Exception as e:
+        print(f"[TTS Error] {e}")
+    return np.array([], dtype=np.float32)
 
 
 def split_sentences(text):
@@ -201,6 +235,9 @@ def speak_worker():
             next_text = None
             continue
 
+        if len(audio) == 0:
+            continue
+
         if enable_overlay:
             launch_overlay(text)
 
@@ -288,6 +325,8 @@ def speak_stream(text):
             break
 
         audio = generate_audio(chunk)
+        if len(audio) == 0:
+            continue
 
         if enable_overlay:
             launch_overlay(chunk)
@@ -323,4 +362,4 @@ if __name__ == "__main__":
     """
     speak_async(test_sentence)
     speak_queue.join()
-    time.sleep(30)
+    time.sleep(3)

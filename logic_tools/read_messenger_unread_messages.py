@@ -408,7 +408,7 @@ def main(target_name=None):
 
                 chrome_args.append("https://www.messenger.com/")
 
-                chrome_process = subprocess.Popen(chrome_args)
+                chrome_process = subprocess.Popen(chrome_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
                 # Wait for Brave's debugging endpoint to become available.
                 deadline = time.time() + 15
@@ -548,5 +548,7 @@ def main(target_name=None):
 
 
 if __name__ == "__main__":
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     name = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
     main(target_name=name)

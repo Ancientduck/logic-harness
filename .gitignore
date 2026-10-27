@@ -57,3 +57,7 @@ logic_skills/*
 !logic_skills/calendar_modification_tip/**
 !logic_skills/screenshot_window/
 !logic_skills/screenshot_window/**
+
+# Telegram
+telegram_logic.py
+telegram_*.py

@@ -5,6 +5,7 @@ import os,sys
 import win32gui
 import win32process
 import win32con
+
 from user_voice import get_voice
 from datetime import datetime
 from logic_memory_manager import memorymanager, _parse_flags
@@ -93,13 +94,6 @@ stop_voice = logic_voice.stop_voice
 API_KEY = os.getenv("API_KEY", "")
 BASE_URL = os.getenv("BASE_URL", "http://localhost:20128/v1")
 
-
-#MODEL = "agy/gemini-3.1-flash-lite" #* good (main)
-#MODEL = "tokenharbor/deepseek-v4.1-flash:free"
-#MODEL = "gemini/gemini-3.5-flash-lite"
-#MODEL = "agn/agnes-3.0-flash"
-
-#MODEL = "cl/cline-free/gemini-3.8-flash"
 MODEL = os.getenv("MODEL", "antigravity/gemini-3.7-flash-tiered")
 
 print(f'model in use: {MODEL}')
@@ -469,7 +463,7 @@ class Base_AI():
 
         if is_text_prompt and not prompt.startswith('/'):
             if not prompt.startswith('SCRIPT_RESULT:') and self.turn_count > 1:
-                relevant_memory = memorymanager.search(user_input)
+                relevant_memory = memorymanager.get_relevant(prompt)
 
         if relevant_memory:
             final_prompt = f'relevant_memory:[{relevant_memory}]'
@@ -913,7 +907,7 @@ class Base_AI():
                     )
                 elif proc.returncode in (1, -1, 15, 3221225786):
                     user_input_queue.put(
-                        f"system:[THREAD {tid} TERMINATED]"
+                        f"system:[THREAD {tid} TERMINATED] BY USER, ASK THE USER FOR INSTRUCTIONS FIRST"
                         + (f"\n{result}" if result else "")
                     )
                 else:
@@ -1629,8 +1623,36 @@ def _supervisor_main():
         if rc != 42:
             break
 
-discard_next_script_result = False
+from logic_heartbeat import Heart
+def logic_heart():
+    TEST_INTERVAL_SECONDS = 30
+    AFK_THRESHOLD_SECONDS = 10
 
+    heart = Heart(afk_threshold_seconds=AFK_THRESHOLD_SECONDS)
+    #print("Heart initialized. Monitoring started...")
+
+    while True:
+        presence = heart.pop_presence_alert()
+        if presence:
+            user_input_queue.put(f"SYSTEM:{presence}")
+
+        #print(f"\n[Pulse Check: {datetime.now().strftime('%I:%M:%S %p')}]")
+        report = heart.beat()
+
+        if report:
+            formatted_report = "\n\n".join(f"[{sec}]\n{text}" for sec, text in report.items())
+            user_input_queue.put(f"SYSTEM: Pulse Check Report:\n{formatted_report}")
+
+        if TEST_INTERVAL_SECONDS is not None:
+            time.sleep(TEST_INTERVAL_SECONDS)
+        else:
+           time.sleep(1800)
+        
+        
+
+    
+
+discard_next_script_result = False
 def run_logic():
     global discard_next_script_result
     if not restored:
@@ -1645,7 +1667,7 @@ def run_logic():
 
     threading.Thread(target=input_thread, daemon=True).start()
     #prompt_ready.set()
-    
+    threading.Thread(target=logic_heart, daemon=True).start()
     while True:
         prompt = None
 

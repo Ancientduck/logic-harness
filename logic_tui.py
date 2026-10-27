@@ -1,41 +1,3 @@
-"""
-LOGIC AI — Terminal UI (Carbon Edition, R3)
-================================================================================
-Run:
-    python logic_tui.py
-
-Set USE_REAL = True  to connect to live logic.py & logic_hall.py backend.
-Set USE_REAL = False to run the self-contained simulation.
-
-R3 overhaul — the TUI is now a pure presentation layer:
-
-  * logic.py owns execution. Subprocess spawning, validate(), tool dispatch,
-    memory, reminders, GUI control, agent dispatch — none of it is
-    reimplemented here anymore.
-  * Streaming is done through a single backend-provided hook:
-    logic.py's `run_code_streamed` calls `self._line_sink(line)` for every
-    line the child process emits. The TUI installs that sink and merges the
-    lines into the token stream. When your logic.py does not call the sink,
-    the TUI falls back to a stdout tee so live output still arrives.
-  * `run_gen_code` and `run_scripts` are the BACKEND's — validate() runs on
-    their output, exactly like CLI mode. The TUI only prepends the child-side
-    tee shim to generated code so that `subprocess.run(capture_output=True)`
-    calls inside generated scripts still stream live.
-  * search_net / gen_code / check_screen get cosmetic "…working…" markers
-    only; the backend does all the work.
-  * Chat streams are painted as cheap plain text while tokens arrive; the
-    expensive Markdown / Panel rebuild happens exactly ONCE on finalize.
-  * Dirty-flag rendering, pinned auto-scroll, batched hall drain, 1 Hz
-    top bar — all preserved from R2.
-  * 17 runnable sandbox scenarios (/demo) in simulation mode.
-
-R3.1 lag fixes:
-  * Tighter stream/hall intervals + smaller retention caps
-  * Final Group cached after finalize (no re-layout of finished bubbles)
-  * Live path is Text-only (no Panel/Markdown until done)
-  * Fast-path skip of parse_stream for pure prose
-  * Output panels use one Text instead of N styled lines
-"""
 
 import contextlib
 import inspect
@@ -3311,8 +3273,9 @@ class LogicTUI(App):
         try:
             import threading as _threading
             _threading.Thread(target=self._voice_listen_loop, daemon=True).start()
-        except Exception:
-            pass
+            _threading.Thread(target=self._heartbeat_loop, daemon=True).start()
+        except Exception as e:
+            sys.stderr.write(f"[TUI] daemon thread start failed: {e}\n")
 
     def _ensure_hall_hooks(self) -> None:
         if not (USE_REAL and logic_hall_module):
@@ -3954,6 +3917,23 @@ class LogicTUI(App):
             # Interrupted recently: drop the in-flight tool's late result so
             # it cannot silently kick off a new LOGIC turn.
             return
+        # Heartbeat alerts (from logic_heartbeat) use the uppercase SYSTEM:
+        # prefix. Strip it for the SYS bubble; forward the raw payload to
+        # LOGIC so the model sees the same "SYSTEM: ..." context it would
+        # in logic.py's own loop.
+        if isinstance(injected, str) and injected.startswith("SYSTEM:"):
+            body = injected[len("SYSTEM:"):].lstrip()
+            self._mount_chat_msg(
+                "SYS",
+                _cap_text_middle(
+                    body or injected,
+                    MAX_SYS_FEEDBACK_CHARS, 800,
+                    "…[alert truncated for display]…",
+                ),
+            )
+            self._queue_or_dispatch_prompt(injected)
+            return
+
         if isinstance(injected, str) and (
             injected.startswith("SCRIPT_RESULT:")
             or injected.startswith("system:[THREAD")
@@ -3980,6 +3960,102 @@ class LogicTUI(App):
             return
         self._mount_chat_msg("SYS", injected)
         self._queue_or_dispatch_prompt(injected)
+
+    def _heartbeat_loop(self) -> None:
+        """Mirror logic_heartbeat's two-cadence scheduler inside the TUI."""
+        if not USE_REAL or user_input_queue is None:
+            return
+
+        try:
+            from logic_heartbeat import (
+                Heart,
+                log_pulse,
+                last_clock_slot,
+                last_message_slot,
+                TICK_SECONDS,
+                MESSAGE_SLOT_MINUTES,
+            )
+        except Exception as e:
+            sys.stderr.write(f"[TUI] heartbeat import failed: {e}\n")
+            return
+
+        AFK_THRESHOLD_SECONDS = 600
+        PRESENCE_POLL_SECONDS = 5
+
+        try:
+            heart = Heart(afk_threshold_seconds=AFK_THRESHOLD_SECONDS)
+        except Exception as e:
+            sys.stderr.write(f"[TUI] heartbeat init failed: {e}\n")
+            return
+
+        def _forward_presence_alerts() -> None:
+            while True:
+                try:
+                    presence = heart.pop_presence_alert()
+                    if presence:
+                        user_input_queue.put(f"SYSTEM:{presence}")
+                except Exception as e:
+                    sys.stderr.write(
+                        f"[TUI] presence alert forwarding error: {e}\n"
+                    )
+                time.sleep(PRESENCE_POLL_SECONDS)
+
+        try:
+            import threading
+
+            threading.Thread(
+                target=_forward_presence_alerts,
+                daemon=True,
+                name="logic-presence-alert-forwarder",
+            ).start()
+        except Exception as e:
+            sys.stderr.write(
+                f"[TUI] presence forwarder start failed: {e}\n"
+            )
+            return
+
+        def _run(label: str, checks: dict) -> None:
+            """Run one cadence, log it, and push any fresh report to the UI."""
+            try:
+                report = heart.beat(checks)
+            except Exception as e:
+                report = {"Diagnostics": f"[{label}] beat() failed: {e}"}
+            log_pulse(report)
+            if report:
+                formatted = "\n\n".join(
+                    f"[{sec}]\n{text}" for sec, text in report.items()
+                )
+                user_input_queue.put(
+                    f"SYSTEM: {label} Report:\n{formatted}"
+                )
+
+        # Seed with the slots already in progress so a TUI restart never
+        # fires a job immediately. Jobs run only when a *new* slot begins.
+        last_slot = last_clock_slot(datetime.now())
+        last_message_slot_seen = last_message_slot(datetime.now())
+
+        while True:
+            try:
+                now = datetime.now()
+
+                slot = last_clock_slot(now)
+                if slot is not None and slot != last_slot:
+                    last_slot = slot
+                    _run("Schedule", {"Schedule": heart.check_schedule})
+
+                msg_slot = last_message_slot(now)
+                if msg_slot is not None and msg_slot != last_message_slot_seen:
+                    last_message_slot_seen = msg_slot
+                    _run("Messages", {
+                        "Gmail": heart.check_gmail,
+                        "Messenger": heart.check_messenger,
+                        "Phone Notifications": heart.check_phone,
+                    })
+
+            except Exception as e:
+                sys.stderr.write(f"[TUI] heartbeat error: {e}\n")
+
+            time.sleep(TICK_SECONDS)
 
     def _voice_listen_loop(self) -> None:
         """Daemon thread: while backend voice_mode is True, capture mic and
