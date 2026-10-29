@@ -8,12 +8,19 @@ def ask_search_net(query, retries=3):
     url = "https://ydc-index.io/v1/search"
     api_key = os.getenv("YOU_API_KEY", "")
 
+
     payload = {
         "query": query,
-        "extraction": {"extraction_mode": "highlights"},
+        "extraction": {
+            "extraction_mode": "highlights",
+            "highlights": {
+                "total_max_tokens": 1024
+            }
+        },
         "safesearch": "off",
         "count": 2
     }
+
 
     headers = {
         "X-API-Key": api_key,
@@ -34,4 +41,4 @@ def ask_search_net(query, retries=3):
             raise e
 
 if __name__ == '__main__':
-    print(ask_search_net("best place to sell drugs in kenshi"))
+    print(ask_search_net("How to make a boat in valheim"))

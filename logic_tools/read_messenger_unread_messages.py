@@ -344,10 +344,14 @@ def extract_messages(page, include_own=False):
 
     own_names = {"you", "apurbo", "apurbo mostafiz"}
     result = []
+    own_allowed = 1
 
     for sender, text in reversed(parsed):
         if not include_own and sender.lower() in own_names:
-            break
+            if own_allowed > 0:
+                own_allowed -= 1
+            else:
+                break
 
         result.append((sender, text))
 

@@ -100,7 +100,6 @@ Available skills ({SKILLS_DIR}):
 Output ONE per turn: <tool>{{"name":"name","args":[...]}}</tool>
 chat_monitor (args:["inbox_name"]) → connect Messenger inbox
 read_skill (["name"]) → Read a skill.md file from available skills using the folder name
-save (args:["name.ext"]) → save last code to logic_tools/
 search_net (args:["query"]) → factual/technical lookup. Use before debugging, scraping sites, or YT transcripts.
 set_reminder (args:["text","minutes"]) → background timer
 read_credential (args:['filename']) → read files containing tokens: {", ".join(f for f in os.listdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), "logic_tools", "oauth_token_files")) if f.endswith(".json"))} read credential when it's relevant

@@ -1,349 +1,282 @@
 @echo off
-:: Single-file Hybrid Launcher & Installer for LOGIC
-setlocal EnableDelayedExpansion
-
-:: Check admin rights and elevate if needed
-net session >nul 2>&1
-if %errorlevel% neq 0 (
-    echo [LOGIC] Requesting administrator privileges...
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process cmd -ArgumentList '/c ""%~f0""' -Verb RunAs"
-    exit /b
-)
-
+setlocal
 cd /d "%~dp0"
-title LOGIC Environment Setup
+set "LOGIC_SELF=%~f0"
+set "LOGIC_TEMPPS=%TEMP%\logic-installer-%RANDOM%-%RANDOM%.ps1"
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "[ScriptBlock]::Create((Get-Content -LiteralPath '%~f0' -Raw -Encoding UTF8) -replace '^@echo off[\s\S]*?::---PS_START---[\r\n]+','').Invoke()"
-
-if %errorlevel% neq 0 (
-    echo.
-    echo [ERROR] Installation failed or encountered an error.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$p=$env:LOGIC_SELF; $out=$env:LOGIC_TEMPPS; $raw=[System.IO.File]::ReadAllText($p); $marker='::---PS_START---'; $i=$raw.IndexOf($marker,[System.StringComparison]::Ordinal); if($i -lt 0){exit 90}; $nl=$raw.IndexOf([char]10,$i); if($nl -lt 0){exit 91}; $body=$raw.Substring($nl+1); [System.IO.File]::WriteAllText($out,$body,(New-Object System.Text.UTF8Encoding($false)))"
+if errorlevel 1 (
+    echo [ERROR] Could not extract the installer. Check that this file is intact.
     pause
-    exit /b %errorlevel%
+    exit /b 1
 )
 
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%LOGIC_TEMPPS%"
+set "RC=%ERRORLEVEL%"
+del "%LOGIC_TEMPPS%" >nul 2>&1
+
+if not "%RC%"=="0" (
+    echo.
+    echo [ERROR] Installer failed with exit code %RC%.
+    pause
+    exit /b %RC%
+)
 echo.
-echo [LOGIC] All the required softwares have been automatically installed.
-echo [LOGIC] If you encountered errors, read the setup_dashboard.html instructions to complete the setup.
+echo [LOGIC] Installer finished. Review the messages above before using LOGIC.
 pause
-exit /b
+exit /b 0
 
 ::---PS_START---
-<#
-    install.ps1
-    LOGIC — full dependency installer and bootstrap.
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 
-    What it does:
-      - Self-elevates via UAC
-      - Checks/installs Python 3.13 and Node.js if missing (via winget, with manual fallback)
-      - Global pip install of requirements.txt
-      - Installs Playwright Chromium
-      - Installs 9Router (npm global)
-      - Detects/installs Everything, enables HTTP server, restarts it
-      - Drops a `logic` command on PATH that cd's into the repo and launches the TUI
-      - Opens setup_dashboard.html and prints next steps
-
-    Requires: requirements.txt and setup_dashboard.html sitting next to this script.
-#>
-
-# ============================================================
-# 1. SELF-ELEVATE
-# ============================================================
-if (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Host "Requesting administrator privileges..." -ForegroundColor Yellow
-    Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
-    exit
+function Write-Section([string]$Text) {
+    Write-Host ''
+    Write-Host "=== $Text ===" -ForegroundColor Cyan
 }
-
-$ErrorActionPreference = "Stop"
-Write-Host "=== LOGIC Installer ===" -ForegroundColor Cyan
-Write-Host ""
-
-$ScriptDir       = $PSScriptRoot
-$RequirementsTxt = Join-Path $ScriptDir "requirements.txt"
-$DashboardHtml   = Join-Path $ScriptDir "setup_dashboard.html"
-
-if (-not (Test-Path $RequirementsTxt)) {
-    Write-Host "ERROR: requirements.txt not found next to install.ps1." -ForegroundColor Red
-    exit 1
-}
-
-# ============================================================
-# HELPER: ensure a command exists, install via winget if not
-# ============================================================
-function Ensure-Command {
-    param(
-        [string]$Command,
-        [string]$WingetId,
-        [string]$ManualUrl,
-        [string]$FriendlyName
-    )
-
-    if (Get-Command $Command -ErrorAction SilentlyContinue) {
-        Write-Host "  $FriendlyName found." -ForegroundColor Green
-        return $true
-    }
-
-    Write-Host "  $FriendlyName not found." -ForegroundColor Yellow
-
-    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-        Write-Host "  winget unavailable. Install manually:" -ForegroundColor Yellow
-        Write-Host "    $ManualUrl" -ForegroundColor Yellow
-        return $false
-    }
-
-    Write-Host "  Installing $FriendlyName via winget..."
-    winget install -e --id $WingetId --silent --accept-package-agreements --accept-source-agreements
-    
-    # Aggressively refresh PATH from Machine, User, and default locations
-    $machinePath = [System.Environment]::GetEnvironmentVariable("Path","Machine")
-    $userPath    = [System.Environment]::GetEnvironmentVariable("Path","User")
-    $extraPaths  = @(
-        "C:\Program Files\nodejs",
+function Refresh-Path {
+    $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $user = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $current = $env:Path
+    $env:Path = (@($machine, $user, $current) -join ';')
+    $extras = @(
+        "$env:ProgramFiles\nodejs",
         "$env:APPDATA\npm",
-        "C:\Program Files\Python313",
-        "C:\Program Files\Python313\Scripts",
         "$env:LOCALAPPDATA\Programs\Python\Python313",
-        "$env:LOCALAPPDATA\Programs\Python\Python313\Scripts"
+        "$env:LOCALAPPDATA\Programs\Python\Python313\Scripts",
+        "$env:ProgramFiles\Python313",
+        "$env:ProgramFiles\Python313\Scripts"
     )
-    $env:Path = ($machinePath + ";" + $userPath + ";" + ($extraPaths -join ";"))
-    return [bool](Get-Command $Command -ErrorAction SilentlyContinue)
-}
-
-# ============================================================
-# 2. PYTHON 3.13
-# ============================================================
-Write-Host "[1/7] Checking Python..." -ForegroundColor Cyan
-if (-not (Ensure-Command -Command "python" -WingetId "Python.Python.3.13" -ManualUrl "https://www.python.org/downloads/release/python-31312/" -FriendlyName "Python 3.13.12")) {
-    Write-Host "  ERROR: Python unavailable. Install from python.org (check 'Add python.exe to PATH')." -ForegroundColor Red
-    exit 1
-}
-Write-Host "  Python: $((python --version) 2>&1)" -ForegroundColor Green
-
-# ============================================================
-# 3. NODE.JS / NPM
-# ============================================================
-Write-Host ""
-Write-Host "[2/7] Checking Node.js..." -ForegroundColor Cyan
-if (-not (Ensure-Command -Command "npm" -WingetId "OpenJS.NodeJS.LTS" -ManualUrl "https://nodejs.org/" -FriendlyName "Node.js (LTS)")) {
-    Write-Host "  ERROR: Node.js/npm unavailable. Install from nodejs.org." -ForegroundColor Red
-    exit 1
-}
-Write-Host "  Node: $((node --version) 2>&1)" -ForegroundColor Green
-
-# ============================================================
-# 4. GLOBAL PIP INSTALL
-# ============================================================
-Write-Host ""
-Write-Host "[3/7] Installing Python dependencies globally..." -ForegroundColor Cyan
-
-python -m pip install --upgrade pip
-python -m pip install -r $RequirementsTxt
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "  ERROR: pip install failed." -ForegroundColor Red
-    exit 1
-}
-
-Write-Host "  Installing Playwright Chromium..."
-python -m playwright install chromium
-
-Write-Host "  Python dependencies installed." -ForegroundColor Green
-
-# ============================================================
-# 5. INSTALL 9ROUTER
-# ============================================================
-Write-Host ""
-Write-Host "[4/7] Installing 9Router..." -ForegroundColor Cyan
-
-$npmResult = npm install -g 9router 2>&1
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "  9Router installed." -ForegroundColor Green
-} else {
-    Write-Host "  9Router install failed:" -ForegroundColor Red
-    Write-Host "  $npmResult" -ForegroundColor Red
-    exit 1
-}
-
-# ============================================================
-# 6. EVERYTHING (detect, install if missing)
-# ============================================================
-Write-Host ""
-Write-Host "[5/7] Checking Everything..." -ForegroundColor Cyan
-
-$EverythingCandidates = @(
-    "C:\Program Files\Everything",
-    "C:\Program Files (x86)\Everything"
-)
-
-$EverythingInstallDir = $null
-foreach ($candidate in $EverythingCandidates) {
-    if (Test-Path (Join-Path $candidate "Everything.exe")) {
-        $EverythingInstallDir = $candidate
-        break
+    foreach ($p in $extras) {
+        if ($p -and (Test-Path $p) -and (($env:Path -split ';') -notcontains $p)) {
+            $env:Path += ";$p"
+        }
     }
 }
+function Test-IsAdmin {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+function Add-UserPath([string]$Directory) {
+    if (-not $Directory -or -not (Test-Path $Directory)) { return }
+    $existing = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $parts = @($existing -split ';' | Where-Object { $_ })
+    if (-not ($parts | Where-Object { $_.TrimEnd('\') -ieq $Directory.TrimEnd('\') })) {
+        $newPath = (@($parts) + $Directory) -join ';'
+        [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
+        Write-Host "Added to your user PATH: $Directory" -ForegroundColor Green
+    }
+}
+function Invoke-WingetInstall([string]$Id, [string]$Name) {
+    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+    if (-not $winget) {
+        throw "winget is unavailable. Install $Name manually, then run this installer again."
+    }
+    Write-Host "Installing $Name using winget..."
+    & $winget.Source install --id $Id --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
+    $code = $LASTEXITCODE
+    Refresh-Path
+    if ($code -ne 0) {
+        Write-Host "winget returned exit code $code; checking whether $Name is nevertheless installed..." -ForegroundColor Yellow
+    }
+}
+function Find-Python313 {
+    Refresh-Path
+    $py = Get-Command py.exe -ErrorAction SilentlyContinue
+    if ($py) {
+        & $py.Source -3.13 -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3,13) else 1)" 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            return @{ Exe = $py.Source; Prefix = @('-3.13') }
+        }
+    }
+    $python = Get-Command python.exe -ErrorAction SilentlyContinue
+    if ($python) {
+        & $python.Source -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3,13) else 1)" 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            return @{ Exe = $python.Source; Prefix = @() }
+        }
+    }
+    return $null
+}
+function Set-IniValue([string]$Content, [string]$Key, [string]$Value) {
+    $pattern = '(?im)^\s*' + [regex]::Escape($Key) + '\s*=.*$'
+    if ([regex]::IsMatch($Content, $pattern)) {
+        return [regex]::Replace($Content, $pattern, "$Key=$Value")
+    }
+    if ($Content -notmatch '(?im)^\s*\[Everything\]\s*$') {
+        $Content = $Content.TrimEnd() + "`r`n`r`n[Everything]`r`n"
+    }
+    $section = [regex]::Match($Content, '(?im)^\s*\[Everything\]\s*$')
+    if (-not $section.Success) { return $Content.TrimEnd() + "`r`n$Key=$Value`r`n" }
+    $nextSection = [regex]::Match($Content.Substring($section.Index + $section.Length), '(?im)^\s*\[.+\]\s*$')
+    if ($nextSection.Success) {
+        $insertAt = $section.Index + $section.Length + $nextSection.Index
+        return $Content.Insert($insertAt, "$Key=$Value`r`n")
+    }
+    return $Content.TrimEnd() + "`r`n$Key=$Value`r`n"
+}
 
-if ($EverythingInstallDir) {
-    Write-Host "  Everything already installed at $EverythingInstallDir" -ForegroundColor Green
-    Write-Host "  Skipping install. Will ensure HTTP server is enabled." -ForegroundColor Gray
-} else {
-    Write-Host "  Everything not found. Installing..." -ForegroundColor Yellow
+try {
+    $scriptPath = $env:LOGIC_SELF
+    if (-not $scriptPath) { throw 'Could not determine the installer file path.' }
+    $scriptDir = Split-Path -Parent $scriptPath
+    $requirements = Join-Path $scriptDir 'requirements.txt'
+    $dashboard = Join-Path $scriptDir 'setup_dashboard.html'
+    $tui = Join-Path $scriptDir 'logic_tui.py'
 
-    $EverythingSetupUrl   = "https://www.voidtools.com/Everything-1.4.1.1026.x64-Setup.exe"
-    $EverythingSetupPath  = "$env:TEMP\Everything-Setup.exe"
-    $EverythingInstallDir = "C:\Program Files\Everything"
+    if (-not (Test-Path -LiteralPath $requirements -PathType Leaf)) {
+        throw "requirements.txt was not found beside the installer: $requirements"
+    }
+    if (-not (Test-Path -LiteralPath $tui -PathType Leaf)) {
+        throw "logic_tui.py was not found beside the installer: $tui"
+    }
 
-    Write-Host "  Downloading..."
-    Invoke-WebRequest -Uri $EverythingSetupUrl -OutFile $EverythingSetupPath -UseBasicParsing
+    # Elevate the extracted PowerShell script itself. Wait for it to finish so
+    # the BAT wrapper does not delete the temporary script before it runs.
+    if (-not (Test-IsAdmin)) {
+        Write-Host 'Requesting administrator privileges through Windows UAC...' -ForegroundColor Yellow
+        $args = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+        $child = Start-Process -FilePath "$PSHOME\powershell.exe" -ArgumentList $args -Verb RunAs -Wait -PassThru
+        exit $child.ExitCode
+    }
 
-    Write-Host "  Installing silently..."
-    $installArgs = "/S -install-options `"-app-data -install-service -install-run-on-system-startup -uninstall-desktop-shortcut -uninstall-quick-launch-shortcut -disable-update-notification`" /D=$EverythingInstallDir"
-    $proc = Start-Process -FilePath $EverythingSetupPath -ArgumentList $installArgs -Wait -PassThru
-    if ($proc.ExitCode -eq 0) {
-        Write-Host "  Everything installed." -ForegroundColor Green
+    Write-Host 'LOGIC setup: checking prerequisites and installing dependencies.' -ForegroundColor Cyan
+    Write-Host "LOGIC folder: $scriptDir"
+
+    Write-Section '1/7 Python 3.13'
+    $pythonInfo = Find-Python313
+    if (-not $pythonInfo) {
+        Invoke-WingetInstall -Id 'Python.Python.3.13' -Name 'Python 3.13'
+        $pythonInfo = Find-Python313
+    }
+    if (-not $pythonInfo) {
+        throw 'Python 3.13 is still unavailable. Install Python 3.13 from https://www.python.org/downloads/ and enable the Python launcher, then rerun this installer.'
+    }
+    $pythonExe = $pythonInfo.Exe
+    $pythonPrefix = @($pythonInfo.Prefix)
+    & $pythonExe @pythonPrefix --version
+    if ($LASTEXITCODE -ne 0) { throw 'Python version check failed.' }
+
+    Write-Section '2/7 Node.js LTS and npm'
+    Refresh-Path
+    if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
+        Invoke-WingetInstall -Id 'OpenJS.NodeJS.LTS' -Name 'Node.js LTS'
+    }
+    Refresh-Path
+    $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    if (-not $npm) { throw 'npm is unavailable after installing Node.js. Restart Windows if PATH has not refreshed, then rerun the installer.' }
+    & $npm.Source --version
+    if ($LASTEXITCODE -ne 0) { throw 'npm version check failed.' }
+
+    Write-Section '3/7 Python virtual environment and dependencies'
+    $venv = Join-Path $scriptDir '.venv'
+    $venvPython = Join-Path $venv 'Scripts\python.exe'
+    if (-not (Test-Path $venvPython)) {
+        & $pythonExe @pythonPrefix -m venv $venv
+        if ($LASTEXITCODE -ne 0) { throw 'Could not create the Python virtual environment.' }
+    }
+    & $venvPython -m pip install --upgrade pip
+    if ($LASTEXITCODE -ne 0) { throw 'Could not upgrade pip in the LOGIC virtual environment.' }
+    & $venvPython -m pip install -r $requirements
+    if ($LASTEXITCODE -ne 0) { throw 'Python requirements installation failed. Review the pip error above.' }
+    & $venvPython -m playwright install chromium
+    if ($LASTEXITCODE -ne 0) { throw 'Playwright Chromium installation failed.' }
+    Write-Host 'Python dependencies and Playwright Chromium installed.' -ForegroundColor Green
+
+    Write-Section '4/7 9Router'
+    Refresh-Path
+    $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    & $npm.Source install --global 9router
+    if ($LASTEXITCODE -ne 0) { throw 'Installing 9Router failed. Review the npm error above.' }
+    $npmPrefix = (& $npm.Source config get prefix | Select-Object -Last 1).Trim()
+    if ($npmPrefix -and (Test-Path $npmPrefix)) { Add-UserPath $npmPrefix }
+    Refresh-Path
+    $router = Get-Command 9router.cmd -ErrorAction SilentlyContinue
+    if (-not $router) {
+        $router = Get-Command 9router -ErrorAction SilentlyContinue
+    }
+    if (-not $router) {
+        Write-Host '9Router installed, but its command was not found in this session. Open a new terminal after setup.' -ForegroundColor Yellow
     } else {
-        Write-Host "  Everything installer exited with code $($proc.ExitCode)." -ForegroundColor Yellow
+        Write-Host "9Router command found: $($router.Source)" -ForegroundColor Green
     }
 
-    Remove-Item $EverythingSetupPath -Force -ErrorAction SilentlyContinue
-}
+    Write-Section '5/7 Everything search'
+    $everythingCandidates = @(
+        (Join-Path $env:ProgramFiles 'Everything\Everything.exe'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Everything\Everything.exe')
+    ) | Where-Object { $_ -and (Test-Path $_) }
+    $everythingExe = $everythingCandidates | Select-Object -First 1
+    if (-not $everythingExe) {
+        Invoke-WingetInstall -Id 'voidtools.Everything' -Name 'Everything search'
+        $everythingCandidates = @(
+            (Join-Path $env:ProgramFiles 'Everything\Everything.exe'),
+            (Join-Path ${env:ProgramFiles(x86)} 'Everything\Everything.exe')
+        ) | Where-Object { $_ -and (Test-Path $_) }
+        $everythingExe = $everythingCandidates | Select-Object -First 1
+    }
+    if (-not $everythingExe) {
+        throw 'Everything was not found after installation. Install it from https://www.voidtools.com/ and rerun this installer.'
+    }
 
-# ============================================================
-# 7. ENABLE EVERYTHING HTTP SERVER + RESTART
-# ============================================================
-Write-Host ""
-Write-Host "[6/7] Enabling Everything HTTP server..." -ForegroundColor Cyan
-
-# Look in %APPDATA% first (standard if -app-data was used), then install folder
-$appdataFolder = Join-Path $env:APPDATA "Everything"
-$appdataIni    = Join-Path $appdataFolder "Everything.ini"
-$installIni    = Join-Path $EverythingInstallDir "Everything.ini"
-
-Stop-Process -Name "Everything" -Force -ErrorAction SilentlyContinue
-Start-Sleep -Milliseconds 500
-
-if (Test-Path $appdataIni) {
-    $EverythingIni = $appdataIni
-} elseif (Test-Path $installIni) {
-    $EverythingIni = $installIni
-} else {
-    # Brand new clean machine: create the Everything folder and initial INI with HTTP enabled
-    if (-not (Test-Path $appdataFolder)) {
+    Write-Section '6/7 Configure Everything HTTP server'
+    # The HTTP server can expose filenames/search results to devices on the
+    # network. Enable it only because the original LOGIC setup requires it.
+    # Do not forward its port on your router or expose it to the public internet.
+    $appdataFolder = Join-Path $env:APPDATA 'Everything'
+    $appdataIni = Join-Path $appdataFolder 'Everything.ini'
+    $installIni = Join-Path (Split-Path -Parent $everythingExe) 'Everything.ini'
+    $ini = $null
+    if (Test-Path $appdataIni) { $ini = $appdataIni }
+    elseif (Test-Path $installIni) { $ini = $installIni }
+    else {
         New-Item -ItemType Directory -Path $appdataFolder -Force | Out-Null
+        $ini = $appdataIni
+        [System.IO.File]::WriteAllText($ini, "[Everything]`r`n", [System.Text.Encoding]::UTF8)
     }
-    $EverythingIni = $appdataIni
-    Set-Content -Path $EverythingIni -Value "[Everything]`r`nallow_http_server=1`r`nhttp_server_port=80" -Encoding UTF8
-    Write-Host "  Created initial Everything.ini with HTTP server enabled." -ForegroundColor Green
-}
+    $content = Get-Content -LiteralPath $ini -Raw
+    if ($null -eq $content) { $content = '' }
+    $content = Set-IniValue -Content $content -Key 'allow_http_server' -Value '1'
+    $content = Set-IniValue -Content $content -Key 'http_server_port' -Value '80'
+    [System.IO.File]::WriteAllText($ini, $content, [System.Text.Encoding]::UTF8)
+    Write-Host "Configured Everything HTTP settings in: $ini" -ForegroundColor Green
 
-if (Test-Path $EverythingIni) {
-    $iniContent = Get-Content $EverythingIni -Raw
-    if ($iniContent -match 'allow_http_server=0') {
-        $iniContent = $iniContent -replace 'allow_http_server=0', 'allow_http_server=1'
-        Set-Content -Path $EverythingIni -Value $iniContent -Encoding UTF8
-        Write-Host "  allow_http_server updated to 1 ($EverythingIni)." -ForegroundColor Green
-    } elseif ($iniContent -match 'allow_http_server=1') {
-        Write-Host "  allow_http_server verified ($EverythingIni)." -ForegroundColor Green
+    Stop-Process -Name 'Everything' -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 700
+    Start-Process -FilePath $everythingExe
+    Write-Host 'Everything restarted. Confirm its HTTP server is enabled in Everything options if your version stores settings elsewhere.' -ForegroundColor Yellow
+
+    Write-Section '7/7 Install the logic command'
+    $binDir = Join-Path $env:LOCALAPPDATA 'LOGIC\bin'
+    New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+    $shim = Join-Path $binDir 'logic.cmd'
+    $shimContent = "@echo off`r`nsetlocal`r`ncd /d `"$scriptDir`"`r`n`"$venvPython`" `"$tui`" %*`r`nexit /b %errorlevel%`r`n"
+    [System.IO.File]::WriteAllText($shim, $shimContent, [System.Text.Encoding]::ASCII)
+    Add-UserPath $binDir
+
+    Write-Section 'Setup dashboard'
+    if (Test-Path -LiteralPath $dashboard) {
+        Start-Process -FilePath $dashboard
     } else {
-        Add-Content -Path $EverythingIni -Value "`r`nallow_http_server=1"
-        Write-Host "  allow_http_server appended to INI." -ForegroundColor Green
+        Write-Host "Dashboard not found (optional): $dashboard" -ForegroundColor Yellow
     }
+
+    Write-Host ''
+    Write-Host 'INSTALLATION COMPLETED' -ForegroundColor Green
+    Write-Host "Python environment: $venv"
+    Write-Host "Launcher: $shim"
+    Write-Host 'Open a NEW Command Prompt or PowerShell window after setup.'
+    Write-Host 'Run: 9router'
+    Write-Host 'Then open http://localhost:20128 and finish the provider/model/API-token setup.'
+    Write-Host 'Finally run: logic'
+    Write-Host ''
+    Write-Host 'Security note: Everything HTTP on port 80 is not intended for public internet exposure.' -ForegroundColor Yellow
+    exit 0
 }
-
-$EverythingExe = Join-Path $EverythingInstallDir "Everything.exe"
-if (Test-Path $EverythingExe) {
-    Start-Process -FilePath $EverythingExe -ErrorAction SilentlyContinue
-    Write-Host "  Everything restarted." -ForegroundColor Green
+catch {
+    Write-Host ''
+    Write-Host "[ERROR] $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host 'No success status was reported. Fix the error above and rerun the installer.' -ForegroundColor Yellow
+    exit 1
 }
-
-# ============================================================
-# 8. INSTALL 'logic' PATH SHIM
-# ============================================================
-Write-Host ""
-Write-Host "[7/7] Installing 'logic' command..." -ForegroundColor Cyan
-
-$ShimDir  = Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps"
-$ShimPath = Join-Path $ShimDir "logic.cmd"
-$TuiPath  = Join-Path $ScriptDir "logic_tui.py"
-
-if (-not (Test-Path $ShimDir)) {
-    New-Item -ItemType Directory -Path $ShimDir -Force | Out-Null
-}
-
-if (-not (Test-Path $TuiPath)) {
-    Write-Host "  WARNING: logic_tui.py not found at $TuiPath" -ForegroundColor Yellow
-}
-
-# The shim cd's into the repo folder before launching.
-# This makes CWD-relative paths in logic.py (logic_tools, screenshot.wav, etc.)
-# work no matter where the user runs 'logic' from.
-$shimContent = @"
-@echo off
-cd /d "$ScriptDir"
-python "$TuiPath" %*
-"@
-
-Set-Content -Path $ShimPath -Value $shimContent -Encoding ASCII
-
-Write-Host "  Installed: $ShimPath" -ForegroundColor Green
-
-# ============================================================
-# 9. LAUNCH SETUP DASHBOARD
-# ============================================================
-Write-Host ""
-Write-Host "Opening setup dashboard..." -ForegroundColor Cyan
-
-if (Test-Path $DashboardHtml) {
-    Start-Process $DashboardHtml
-} else {
-    Write-Host "  WARNING: setup_dashboard.html not found." -ForegroundColor Yellow
-    Write-Host "  Expected at: $DashboardHtml" -ForegroundColor Yellow
-}
-
-# ============================================================
-# 10. SUMMARY
-# ============================================================
-Write-Host ""
-Write-Host "================================================================" -ForegroundColor Green
-Write-Host " INSTALLATION COMPLETE" -ForegroundColor Green
-Write-Host "================================================================" -ForegroundColor Green
-Write-Host ""
-
-Write-Host " What the installer just did:" -ForegroundColor White
-Write-Host "   [x] Installed Python 3.13 (if missing)" -ForegroundColor Gray
-Write-Host "   [x] Installed Node.js + npm (if missing)" -ForegroundColor Gray
-Write-Host "   [x] Installed all Python dependencies globally" -ForegroundColor Gray
-Write-Host "   [x] Installed Playwright Chromium browser" -ForegroundColor Gray
-Write-Host "   [x] Installed 9Router (npm global)" -ForegroundColor Gray
-Write-Host "   [x] Installed / detected Everything" -ForegroundColor Gray
-Write-Host "   [x] Enabled Everything's HTTP server" -ForegroundColor Gray
-Write-Host "   [x] Registered the 'logic' command on PATH" -ForegroundColor Gray
-Write-Host ""
-
-Write-Host " What YOU need to do now (in order):" -ForegroundColor Yellow
-Write-Host ""
-Write-Host "   1. The setup dashboard should have opened in your browser." -ForegroundColor White
-Write-Host "      If not, open setup_dashboard.html manually." -ForegroundColor Gray
-Write-Host "        - Pick your LOGIC folder" -ForegroundColor Gray
-Write-Host "        - Fill in your API keys" -ForegroundColor Gray
-Write-Host "        - Click 'Ping All' to verify services" -ForegroundColor Gray
-Write-Host "        - Click 'Save / Export .env'" -ForegroundColor Gray
-Write-Host ""
-Write-Host "   2. Open a NEW Command Prompt window and run:" -ForegroundColor White
-Write-Host "        9router" -ForegroundColor Cyan
-Write-Host "      This starts the 9Router gateway." -ForegroundColor Gray
-Write-Host ""
-Write-Host "   3. Open this link in your browser:" -ForegroundColor White
-Write-Host "        http://localhost:20128" -ForegroundColor Cyan
-Write-Host "      In the 9Router dashboard:" -ForegroundColor Gray
-Write-Host "        - Go to Providers, add one (Google AI Studio is free)" -ForegroundColor Gray
-Write-Host "        - Paste the API key the dashboard told you about" -ForegroundColor Gray
-Write-Host "        - Go to Models, copy the model alias you want" -ForegroundColor Gray
-Write-Host "        - Go to API Tokens, create one, paste into the dashboard" -ForegroundColor Gray
-Write-Host ""
-Write-Host "   4. Launch LOGIC from any terminal:" -ForegroundColor White
-Write-Host "        logic" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "================================================================" -ForegroundColor Green
-Write-Host ""
