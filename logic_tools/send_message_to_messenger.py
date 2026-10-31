@@ -4,7 +4,9 @@ import socket
 import sys
 import json
 import re
+from selenium.webdriver.common.action_chains import ActionChains
 import time
+import shutil
 from pathlib import Path
 
 from selenium import webdriver
@@ -33,9 +35,15 @@ BRAVE_PATH = os.path.expandvars(r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\App
 
 SIGNATURE = "-LOGIC, Apurbo's AI companion"
 
+# --- HEADLESS MODE ---
+# True  = run invisible, send, then auto-close the automation browser.
+# False = visible browser for testing; stays open, never auto-closes.
+HEADLESS = False
+_OWNED_DRIVER = None
 
-# def _dbg(tag, **kw):
-#     print(f"[DBG] {tag} | " + " ".join(f"{k}={v!r}" for k, v in kw.items()), flush=True)
+
+def _dbg(tag, **kw):
+    print(f"[DBG] {tag} | " + " ".join(f"{k}={v!r}" for k, v in kw.items()), flush=True)
 
 
 # ============================================================
@@ -86,14 +94,22 @@ def _common_perf_options(options):
 
 
 def launch_new_chrome():
+    #_dbg("LAUNCH_NEW_BROWSER", headless=HEADLESS, binary=BRAVE_PATH)
+    global _OWNED_DRIVER
     options = Options()
-    options.add_experimental_option("detach", True)
     options.add_experimental_option("prefs", {
         "session.restore_on_startup": 4,
         "session.startup_urls": ["https://www.messenger.com"],
     })
-    options.add_argument(f"user-data-dir={USER_DATA_DIR}")
-    options.add_argument(f"--remote-debugging-port={DEBUG_PORT}")
+    if HEADLESS:
+        options.add_argument(f"user-data-dir={USER_DATA_DIR}")
+        options.add_argument("--headless=new")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--window-size=1920,1080")
+    else:
+        options.add_experimental_option("detach", True)
+        options.add_argument(f"user-data-dir={USER_DATA_DIR}")
+        options.add_argument(f"--remote-debugging-port={DEBUG_PORT}")
     options.add_argument("--no-first-run")
     options.add_argument("--no-default-browser-check")
     options.add_argument("--disable-background-networking")
@@ -104,10 +120,12 @@ def launch_new_chrome():
     options = _common_perf_options(options)
     driver = make_driver(options)
     apply_perf_tuning(driver)
+    _OWNED_DRIVER = driver
     return driver
 
 
 def attach_to_existing_chrome():
+    #_dbg("ATTACH_ATTEMPT", port=DEBUG_PORT)
     options = Options()
     options.add_experimental_option("debuggerAddress", f"localhost:{DEBUG_PORT}")
     options = _common_perf_options(options)
@@ -117,13 +135,24 @@ def attach_to_existing_chrome():
 
 
 def get_driver():
+    global _OWNED_DRIVER
     if is_debug_chrome_running():
         try:
             d = attach_to_existing_chrome()
             _ = d.current_url
+            #_dbg("ATTACH_SUCCESS", url=d.current_url)
+            _OWNED_DRIVER = None
             return d
+        except Exception as e:
+            #_dbg("ATTACH_FAILED", err=str(e))
+            print(e)
+    # HEADLESS: reuse the owned browser across the whole batch
+    if HEADLESS and _OWNED_DRIVER is not None:
+        try:
+            _ = _OWNED_DRIVER.current_url
+            return _OWNED_DRIVER
         except Exception:
-            pass
+            _OWNED_DRIVER = None
     return launch_new_chrome()
 
 
@@ -551,29 +580,36 @@ def try_select_from_sidebar(driver, aliases):
 #  TYPING
 # ============================================================
 def type_message(driver, textbox, text):
-    from selenium.webdriver.common.action_chains import ActionChains
-    try:
-        driver.execute_script("arguments[0].focus();", textbox)
-    except Exception:
-        pass
-
-    lines = text.split(chr(10))
+    """
+    Type text into the messenger composer textbox and press Enter to send.
+    Handles newlines via Shift+Enter.
+    """
+    driver.execute_script("arguments[0].focus();", textbox)
     actions = ActionChains(driver)
     actions.click(textbox)
-    #*here
-    for i, line in enumerate(lines):
+
+    lines = text.split('\n')
+    for idx, line in enumerate(lines):
         if line:
             actions.send_keys(line)
-        if i < len(lines) - 1:
+        if idx < len(lines) - 1:
             actions.key_down(Keys.SHIFT).send_keys(Keys.ENTER).key_up(Keys.SHIFT)
 
     actions.send_keys(Keys.ENTER)
     actions.perform()
 
+    # Synchronous post-send verification and socket flush window
+    start_time = time.time()
+    while time.time() - start_time < 3.0:
+        is_empty = driver.execute_script(
+            "return (arguments[0].innerText || arguments[0].textContent || '').trim() === '';",
+            textbox
+        )
+        if is_empty:
+            break
+        time.sleep(0.1)
+    time.sleep(0.5)
 
-# ============================================================
-#  CORE SEND
-# ============================================================
 def send_message(name='', msg='', file_path=''):
     t0 = time.time()
     #_dbg("ENTER", name=name, msg=msg, file=file_path)
@@ -722,10 +758,21 @@ def send_message(name='', msg='', file_path=''):
 
 
 def send_messages(the_list):
-    for name, msg, *rest in the_list:
-        file_path = rest[0] if rest else ''
-        print(f"\n[QUEUE] Target: {name} | Msg: {msg} | File: {file_path or 'none'}")
-        send_message(name, msg, file_path)
+    try:
+        for name, msg, *rest in the_list:
+            file_path = rest[0] if rest else ''
+            print(f"\n[QUEUE] Target: {name} | Msg: {msg} | File: {file_path or 'none'}")
+            send_message(name, msg, file_path)
+    finally:
+        if HEADLESS:
+            if _OWNED_DRIVER is not None:
+                try:
+                    _OWNED_DRIVER.quit()
+                    print("[OK] Headless Brave closed.")
+                except Exception:
+                    pass
+            elif is_debug_chrome_running():
+                close_chrome()
 
 
 # ============================================================
@@ -749,5 +796,5 @@ if __name__ == '__main__':
                 print(f'[ERROR] Bad argument: {e}')
         else:
             send_messages([
-                ['২ নম্বার খাঁটি মাল (•̀ᴗ•́)', 'ho, fuck you'],
+                ['hamim', "Logic here, messaging on Apurbo's behalf. He told me to remind you that you that HSC results are gonna come out on 31 OCT "],
             ])

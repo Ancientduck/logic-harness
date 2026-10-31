@@ -24,6 +24,6 @@ sounddevice
 textual
 tinyfish
 uiautomation
-webrtcvad
+webrtcvad-wheels==2.0.14.post1
 wmi
 ptts

@@ -13,8 +13,11 @@ import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
+from pathlib import Path
 
-LOGIC_TOOLS_DIR = r"D:\Ai\logic\logic_tools"
+current_dir =  Path(__file__).resolve().parent
+
+LOGIC_TOOLS_DIR = current_dir / "logic_tools"
 
 QUIET_SUBSTRINGS = [
     "no unread messages",
@@ -47,6 +50,9 @@ def get_idle_duration_seconds() -> float:
     millis = ctypes.windll.kernel32.GetTickCount() - lii.dwTime
     return max(0.0, millis / 1000.0)
 
+from messenger_chat_monitor import MessengerBot
+
+chat_bot = None
 
 class Heart:
     def __init__(self, afk_threshold_seconds: int = 600):
@@ -59,6 +65,24 @@ class Heart:
 
         self._monitor_thread = threading.Thread(target=self._afk_loop, daemon=True)
         self._monitor_thread.start()
+
+
+    def chat_monitor_bot(self):
+        global chat_bot
+        chat_bot = MessengerBot()
+        chat_bot.start(USER_INBOX_NAME)
+        bot = chat_bot
+        try:
+            while chat_bot is not None:
+                msg = bot.get_injection()
+                if msg:
+                    yield msg
+                time.sleep(5)
+        finally:
+            try:
+                bot.stop()
+            except Exception:
+                pass
 
     def _afk_loop(self):
         while True:
@@ -305,48 +329,110 @@ def run_job(heart, label, checks):
     return report
 
 
-if __name__ == "__main__":
-    AFK_THRESHOLD_SECONDS = 600
+USER_INBOX_NAME = "Apurbo"
 
-    heart = Heart(afk_threshold_seconds=AFK_THRESHOLD_SECONDS)
-    print("Heart initialized.")
-    print("  schedule : :00 / :30  (30 min lookahead)")
-    print("  messages : every %d min, on the clock" % MESSAGE_SLOT_MINUTES)
-    print("  tick     : %ds" % TICK_SECONDS)
 
-    # Seed with the slots already in progress so a restart never fires a job
-    # immediately. Jobs run only when a *new* slot begins.
-    last_slot = last_clock_slot(datetime.now())
-    last_message_slot_seen = last_message_slot(datetime.now())
 
-    while True:
+def heart_beat_loop(user_input_queue):
+       
+        AFK_THRESHOLD_SECONDS = 600
+        PRESENCE_POLL_SECONDS = 5
+        heart = Heart(afk_threshold_seconds=AFK_THRESHOLD_SECONDS)
+
+        def check_afk_monitor():
+            global chat_bot
+            #print(f"user_afk {heart.is_afk}")
+            if heart.is_afk:
+                if chat_bot is None:
+                    gen = heart.chat_monitor_bot()
+
+                    def worker():
+                        while True:
+                            try:
+                                msg = next(gen)
+                            except StopIteration:
+                                break
+                            if msg:
+                                #print(f"\nsend:\n{msg}")
+                                user_input_queue.put(f"SYSTEM: User is AFK,Reply to the inbox {USER_INBOX_NAME} using send_message_to_messenger tool, Context: {msg}")
+                    threading.Thread(target=worker,daemon=True).start()
+            else:
+                if chat_bot:
+                    chat_bot = None
+                    
+
+        def _forward_presence_alerts() -> None:
+            while True:
+                try:
+                    presence = heart.pop_presence_alert()
+                    if presence:
+                        user_input_queue.put(f"SYSTEM:{presence}")
+                except Exception as e:
+                    sys.stderr.write(
+                        f"[TUI] presence alert forwarding error: {e}\n"
+                    )
+                time.sleep(PRESENCE_POLL_SECONDS)
+
         try:
-            now = datetime.now()
-
-            presence = heart.pop_presence_alert()
-            if presence:
-                print("\n--- %s ---" % presence)
-
-            # clock job - only on the half hour
-            slot = last_clock_slot(now)
-            if slot is not None and slot != last_slot:
-                last_slot = slot
-                run_job(heart, "Schedule", {"Schedule": heart.check_schedule})
-
-            # interval job - messages every 10 minutes, aligned to the clock
-            msg_slot = last_message_slot(now)
-            if msg_slot is not None and msg_slot != last_message_slot_seen:
-                last_message_slot_seen = msg_slot
-                run_job(heart, "Messages", {
-                    "Gmail": heart.check_gmail,
-                    "Messenger": heart.check_messenger,
-                    "Phone Notifications": heart.check_phone,
-                })
-
-        except KeyboardInterrupt:
-            print("\nStopped.")
-            break
+            threading.Thread(
+                target=_forward_presence_alerts,
+                daemon=True,
+                name="logic-presence-alert-forwarder",
+            ).start()
         except Exception as e:
-            print("[heartbeat] loop error: %s" % e)
+            sys.stderr.write(
+                f"[TUI] presence forwarder start failed: {e}\n"
+            )
+            return
 
-        time.sleep(TICK_SECONDS)
+        def _run(label: str, checks: dict) -> None:
+            """Run one cadence, log it, and push any fresh report to the UI."""
+            try:
+                report = heart.beat(checks)
+            except Exception as e:
+                report = {"Diagnostics": f"[{label}] beat() failed: {e}"}
+            log_pulse(report)
+            if report:
+                formatted = "\n\n".join(
+                    f"[{sec}]\n{text}" for sec, text in report.items()
+                )
+                user_input_queue.put(
+                    f"SYSTEM: {label} Report:\n{formatted}"
+                )
+
+        # Seed with the slots already in progress so a TUI restart never
+        # fires a job immediately. Jobs run only when a *new* slot begins.
+        last_slot = last_clock_slot(datetime.now())
+        last_message_slot_seen = last_message_slot(datetime.now())
+
+        while True:
+            try:
+                check_afk_monitor()
+                now = datetime.now()
+
+                slot = last_clock_slot(now)
+                if slot is not None and slot != last_slot:
+                    last_slot = slot
+                    _run("Schedule", {"Schedule": heart.check_schedule})
+
+                msg_slot = last_message_slot(now)
+                if msg_slot is not None and msg_slot != last_message_slot_seen:
+                    last_message_slot_seen = msg_slot
+                    _run("Messages", {
+                        "Gmail": heart.check_gmail,
+                        "Messenger": heart.check_messenger,
+                        "Phone Notifications": heart.check_phone,
+                    })
+
+            except Exception as e:
+                sys.stderr.write(f"[TUI] heartbeat error: {e}\n")
+
+            time.sleep(TICK_SECONDS)
+
+
+
+if __name__ == "__main__":
+    import queue
+    user_input_queue = queue.Queue()
+    heart_beat_loop(user_input_queue)
+

@@ -3271,9 +3271,10 @@ class LogicTUI(App):
         self.set_interval(HALL_DRAIN_INTERVAL, self._drain_hall_stream_queue)
         self.set_interval(0.25, self._background_poll)
         try:
-            import threading as _threading
-            _threading.Thread(target=self._voice_listen_loop, daemon=True).start()
-            _threading.Thread(target=self._heartbeat_loop, daemon=True).start()
+
+            from logic_heartbeat import heart_beat_loop
+            threading.Thread(target=self._voice_listen_loop, daemon=True).start()
+            threading.Thread(target=heart_beat_loop,args=(user_input_queue,), daemon=True).start()
         except Exception as e:
             sys.stderr.write(f"[TUI] daemon thread start failed: {e}\n")
 
@@ -3960,102 +3961,6 @@ class LogicTUI(App):
             return
         self._mount_chat_msg("SYS", injected)
         self._queue_or_dispatch_prompt(injected)
-
-    def _heartbeat_loop(self) -> None:
-        """Mirror logic_heartbeat's two-cadence scheduler inside the TUI."""
-        if not USE_REAL or user_input_queue is None:
-            return
-
-        try:
-            from logic_heartbeat import (
-                Heart,
-                log_pulse,
-                last_clock_slot,
-                last_message_slot,
-                TICK_SECONDS,
-                MESSAGE_SLOT_MINUTES,
-            )
-        except Exception as e:
-            sys.stderr.write(f"[TUI] heartbeat import failed: {e}\n")
-            return
-
-        AFK_THRESHOLD_SECONDS = 600
-        PRESENCE_POLL_SECONDS = 5
-
-        try:
-            heart = Heart(afk_threshold_seconds=AFK_THRESHOLD_SECONDS)
-        except Exception as e:
-            sys.stderr.write(f"[TUI] heartbeat init failed: {e}\n")
-            return
-
-        def _forward_presence_alerts() -> None:
-            while True:
-                try:
-                    presence = heart.pop_presence_alert()
-                    if presence:
-                        user_input_queue.put(f"SYSTEM:{presence}")
-                except Exception as e:
-                    sys.stderr.write(
-                        f"[TUI] presence alert forwarding error: {e}\n"
-                    )
-                time.sleep(PRESENCE_POLL_SECONDS)
-
-        try:
-            import threading
-
-            threading.Thread(
-                target=_forward_presence_alerts,
-                daemon=True,
-                name="logic-presence-alert-forwarder",
-            ).start()
-        except Exception as e:
-            sys.stderr.write(
-                f"[TUI] presence forwarder start failed: {e}\n"
-            )
-            return
-
-        def _run(label: str, checks: dict) -> None:
-            """Run one cadence, log it, and push any fresh report to the UI."""
-            try:
-                report = heart.beat(checks)
-            except Exception as e:
-                report = {"Diagnostics": f"[{label}] beat() failed: {e}"}
-            log_pulse(report)
-            if report:
-                formatted = "\n\n".join(
-                    f"[{sec}]\n{text}" for sec, text in report.items()
-                )
-                user_input_queue.put(
-                    f"SYSTEM: {label} Report:\n{formatted}"
-                )
-
-        # Seed with the slots already in progress so a TUI restart never
-        # fires a job immediately. Jobs run only when a *new* slot begins.
-        last_slot = last_clock_slot(datetime.now())
-        last_message_slot_seen = last_message_slot(datetime.now())
-
-        while True:
-            try:
-                now = datetime.now()
-
-                slot = last_clock_slot(now)
-                if slot is not None and slot != last_slot:
-                    last_slot = slot
-                    _run("Schedule", {"Schedule": heart.check_schedule})
-
-                msg_slot = last_message_slot(now)
-                if msg_slot is not None and msg_slot != last_message_slot_seen:
-                    last_message_slot_seen = msg_slot
-                    _run("Messages", {
-                        "Gmail": heart.check_gmail,
-                        "Messenger": heart.check_messenger,
-                        "Phone Notifications": heart.check_phone,
-                    })
-
-            except Exception as e:
-                sys.stderr.write(f"[TUI] heartbeat error: {e}\n")
-
-            time.sleep(TICK_SECONDS)
 
     def _voice_listen_loop(self) -> None:
         """Daemon thread: while backend voice_mode is True, capture mic and

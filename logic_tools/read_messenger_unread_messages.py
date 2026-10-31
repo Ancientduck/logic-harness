@@ -326,8 +326,12 @@ def extract_messages(page, include_own=False):
     if not msg_els:
         return []
 
-    pattern = re.compile(
+    pattern_with_text = re.compile(
         r"Enter, Message sent .+? by (.+?): (.+)",
+        re.DOTALL
+    )
+    pattern_no_text = re.compile(
+        r"Enter, Message sent .+? by (.+)",
         re.DOTALL
     )
 
@@ -335,12 +339,50 @@ def extract_messages(page, include_own=False):
 
     for el in msg_els:
         aria = el.get_attribute("aria-label") or ""
-        m = pattern.match(aria)
+        m = pattern_with_text.match(aria)
 
         if m:
             sender = m.group(1).strip()
             text = m.group(2).strip()
-            parsed.append((sender, text))
+        else:
+            m_no_txt = pattern_no_text.match(aria)
+            if m_no_txt:
+                sender = m_no_txt.group(1).strip()
+                text = ""
+            else:
+                continue
+
+        # Detect attached media images within message container / parent article / row
+        img_count = 0
+        try:
+            img_count = el.evaluate('''node => {
+                const container = node.closest("[role='article']") || node.closest("div[role='row']") || node.parentElement || node;
+                const images = container.querySelectorAll("img");
+                let count = 0;
+                for (const img of images) {
+                    const src = img.getAttribute("src") || "";
+                    const alt = img.getAttribute("alt") || "";
+                    if (src.includes("/images/emoji.php") || alt.startsWith("Seen by")) continue;
+                    if (alt === "Open photo" || src.startsWith("data:image/") || (src.includes("scontent") && img.clientWidth > 50)) {
+                        count++;
+                    }
+                }
+                return count;
+            }''') or 0
+        except Exception:
+            pass
+
+        img_tag = ""
+        if img_count == 1:
+            img_tag = "[Image]"
+        elif img_count > 1:
+            img_tag = f"[{img_count} Images]"
+
+        parts = [p for p in (img_tag, text) if p]
+        body = " ".join(parts)
+
+        if body:
+            parsed.append((sender, body))
 
     own_names = {"you", "apurbo", "apurbo mostafiz"}
     result = []
