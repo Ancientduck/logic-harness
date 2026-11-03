@@ -38,7 +38,7 @@ SIGNATURE = "-LOGIC, Apurbo's AI companion"
 # --- HEADLESS MODE ---
 # True  = run invisible, send, then auto-close the automation browser.
 # False = visible browser for testing; stays open, never auto-closes.
-HEADLESS = False
+HEADLESS = True
 _OWNED_DRIVER = None
 
 
@@ -168,7 +168,7 @@ def close_chrome():
     if is_debug_chrome_running():
         try:
             attach_to_existing_chrome().quit()
-            print('[OK] Automation Brave closed.')
+            #print('[OK] Automation Brave closed.')
         except Exception as e:
             print(f'[ERROR] Could not close Brave: {e}')
     else:
@@ -310,21 +310,31 @@ def resolve_identifiers(input_name):
             #_dbg("RESOLVE_BIDIR", mode=mode, alias=aliases, search=real_search_name)
             return real_search_name, aliases
 
-    # 3) fuzzy fallback in both directions
+    # 3) fuzzy fallback in both directions (substring)
     for nick, real in nick_map.items():
         if input_lower in nick.lower() or nick.lower() in input_lower:
             real_search_name = real
             aliases = list(dict.fromkeys([input_lower, nick.lower(), real.lower()]))
-            #_dbg("RESOLVE_FUZZY", mode="nick~", alias=aliases, search=real_search_name)
             return real_search_name, aliases
     for nick, real in nick_map.items():
         if input_lower in real.lower() or real.lower() in input_lower:
             real_search_name = nick
             aliases = list(dict.fromkeys([input_lower, nick.lower(), real.lower()]))
-            #_dbg("RESOLVE_FUZZY", mode="real~", alias=aliases, search=real_search_name)
             return real_search_name, aliases
 
-    #_dbg("RESOLVE_NONE", input=inp)
+    # 4) similarity fallback (difflib) for typos/transliteration misses
+    import difflib
+    nick_matches = difflib.get_close_matches(input_lower, [k.lower() for k in nick_map.keys()], n=1, cutoff=0.75)
+    if nick_matches:
+        matched_nick = next(k for k in nick_map if k.lower() == nick_matches[0])
+        real_val = nick_map[matched_nick]
+        return real_val, list(dict.fromkeys([input_lower, matched_nick.lower(), real_val.lower()]))
+
+    real_matches = difflib.get_close_matches(input_lower, [v.lower() for v in nick_map.values()], n=1, cutoff=0.75)
+    if real_matches:
+        matched_nick = next(k for k, v in nick_map.items() if v.lower() == real_matches[0])
+        return matched_nick, list(dict.fromkeys([input_lower, matched_nick.lower(), nick_map[matched_nick].lower()]))
+
     return real_search_name, aliases
 
 
@@ -732,16 +742,19 @@ def send_message(name='', msg='', file_path=''):
 
     if file_path:
         files = [file_path] if isinstance(file_path, str) else file_path
-        for f in files:
+        valid_files = [str(Path(f).resolve()) for f in files if os.path.exists(str(Path(f).resolve()))]
+        if valid_files:
             file_box = wait.until(EC.presence_of_element_located(
                 (By.XPATH, "//input[@type='file']")))
-            file_box.send_keys(str(Path(f).resolve()))
+            # Chromium attaches multiple files by passing paths joined by newline
+            file_box.send_keys("\n".join(valid_files))
             try:
-                WebDriverWait(driver, 10, poll_frequency=0.1).until(
-                    lambda d: d.find_elements(
+                WebDriverWait(driver, 12, poll_frequency=0.2).until(
+                    lambda d: len(d.find_elements(
                         By.CSS_SELECTOR,
-                        "[role='textbox'] ~ * [role='button'][aria-label*='Remove'], "
-                        "div[aria-label*='attachment' i], div[aria-label*='Remove' i]"))
+                        "[aria-label*='Remove attachment' i], [aria-label*='Remove' i][role='button']"
+                    )) >= len(valid_files)
+                )
             except Exception:
                 pass
 
@@ -752,6 +765,20 @@ def send_message(name='', msg='', file_path=''):
     #_dbg("TYPING", final_msg=msg)
     type_message(driver, textbox, msg)
     #_dbg("TYPED", elapsed=round(time.time()-t0, 2))
+
+    if file_path:
+        # Ensure attachments clear composer and network finishes before quitting headless browser
+        try:
+            WebDriverWait(driver, 15, poll_frequency=0.2).until(
+                lambda d: len(d.find_elements(
+                    By.CSS_SELECTOR,
+                    "[aria-label*='Remove attachment' i]"
+                )) == 0
+            )
+        except Exception:
+            pass
+        # Grace period for blob encryption & network dispatch
+        time.sleep(2.5)
 
     print(f'[SUCCESS] Message sent to {matched} in {time.time() - t0:.1f}s')
     print("==========================================\n")

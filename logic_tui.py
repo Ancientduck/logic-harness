@@ -383,7 +383,8 @@ def _mirror_transcript(sender: str, text: str) -> None:
     if not body.strip():
         return
     try:
-        path = os.path.join(os.getcwd(), TRANSCRIPT_LOG_NAME)
+        log_path = os.path.dirname(os.path.abspath(__file__)) +r"\logs"
+        path = os.path.join(log_path, TRANSCRIPT_LOG_NAME)
         with _TRANSCRIPT_LOG_LOCK:
             try:
                 if (
@@ -3551,6 +3552,7 @@ class LogicTUI(App):
 
     @work(exclusive=True, thread=True, group="logic_stream")
     def _send_system_greeting(self) -> None:
+        from personal_news import get_news
         worker = get_current_worker()
         self._active_stream_worker = worker
         self.call_from_thread(self._set_processing, True)
@@ -3569,7 +3571,8 @@ class LogicTUI(App):
                 "do not repeat those items — ask about the user's current activity "
                 "or mood instead. "
                 f"Previous session: {load_last_summary()} | "
-                f"Schedule: {get_local_day_schedule()}"
+                f"Schedule: {get_local_day_schedule()} | "
+                f"Relevant news:{get_news()} "
             )
 
         try:

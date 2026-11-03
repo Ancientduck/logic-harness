@@ -1541,19 +1541,16 @@ import logic_hall
 logic_hall.init_hall(user_input_queue)
 
 def start_monitor(name):
-    from messenger_chat_monitor import MessengerBot
+    from messenger_chat_monitor import start_monitor_service
     global monitor_bot
-    if monitor_bot is not None:
-        print("[Monitor] Already running")
-        return
-    monitor_bot = MessengerBot()
-    monitor_bot.start(name)
+    monitor_bot = start_monitor_service(name)
     print(f"[Monitor] Started watching {name}")
 
 def stop_monitor():
     global monitor_bot
     if monitor_bot:
         monitor_bot.stop()
+        
         monitor_bot = None
         print("[Monitor] Stopped")
 
@@ -1623,31 +1620,8 @@ def _supervisor_main():
         if rc != 42:
             break
 
-from logic_heartbeat import Heart
-def logic_heart():
-    TEST_INTERVAL_SECONDS = 30
-    AFK_THRESHOLD_SECONDS = 10
-
-    heart = Heart(afk_threshold_seconds=AFK_THRESHOLD_SECONDS)
-    #print("Heart initialized. Monitoring started...")
-
-    while True:
-        presence = heart.pop_presence_alert()
-        if presence:
-            user_input_queue.put(f"SYSTEM:{presence}")
-
-        #print(f"\n[Pulse Check: {datetime.now().strftime('%I:%M:%S %p')}]")
-        report = heart.beat()
-
-        if report:
-            formatted_report = "\n\n".join(f"[{sec}]\n{text}" for sec, text in report.items())
-            user_input_queue.put(f"SYSTEM: Pulse Check Report:\n{formatted_report}")
-
-        if TEST_INTERVAL_SECONDS is not None:
-            time.sleep(TEST_INTERVAL_SECONDS)
-        else:
-           time.sleep(1800)
-        
+from logic_heartbeat import heart_beat_loop
+from personal_news import get_news
         
 
     
@@ -1658,7 +1632,7 @@ def run_logic():
     if not restored:
         the_console.print("LOGIC: ", style=color_reply, end="", highlight=False)
         for chunk in logic_ai.call_logic(
-        f"system: user is Online. Greet briefly. If schedule matches previous summary, ask about user's current activity or mood instead. Do not reference schedule items already known. Previous: {load_last_summary()}\nSchedule: {get_local_day_schedule()}"
+        f"system: user is Online. Greet briefly. If schedule matches previous summary, ask about user's current activity or mood instead. Do not reference schedule items already known. Previous: {load_last_summary()}\nSchedule: {get_local_day_schedule()}\n relevant_news:{get_news()}"
         ):
             the_console.print(chunk, style=color_reply, end="", highlight=False, markup=False)
         print('')
@@ -1667,7 +1641,7 @@ def run_logic():
 
     threading.Thread(target=input_thread, daemon=True).start()
     #prompt_ready.set()
-    threading.Thread(target=logic_heart, daemon=True).start()
+    threading.Thread(target=heart_beat_loop,args=(user_input_queue,), daemon=True).start()
     while True:
         prompt = None
 

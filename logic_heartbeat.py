@@ -50,6 +50,12 @@ def get_idle_duration_seconds() -> float:
     millis = ctypes.windll.kernel32.GetTickCount() - lii.dwTime
     return max(0.0, millis / 1000.0)
 
+
+
+
+
+
+
 from messenger_chat_monitor import MessengerBot
 
 chat_bot = None
@@ -65,13 +71,16 @@ class Heart:
 
         self._monitor_thread = threading.Thread(target=self._afk_loop, daemon=True)
         self._monitor_thread.start()
+        self.chat_monitor_turned_on_From_here = False
 
 
     def chat_monitor_bot(self):
         global chat_bot
         chat_bot = MessengerBot()
         chat_bot.start(USER_INBOX_NAME)
+        self.chat_monitor_turned_on_From_here = True
         bot = chat_bot
+
         try:
             while chat_bot is not None:
                 msg = bot.get_injection()
@@ -81,6 +90,10 @@ class Heart:
         finally:
             try:
                 bot.stop()
+                if self.chat_monitor_turned_on_From_here:
+                    kill_brave_from_here()
+                    self.chat_monitor_turned_on_From_here = False
+                
             except Exception:
                 pass
 
@@ -252,7 +265,8 @@ class Heart:
 
 
 # ---------------------------------------------------------------- audit log
-PULSE_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logic_heartbeat.log")
+log_path = os.path.dirname(os.path.abspath(__file__)) +r"\logs"
+PULSE_LOG = os.path.join(log_path, "logic_heartbeat.log")
 LOG_MAX_BYTES = 512_000
 
 def log_pulse(report: dict):
@@ -331,21 +345,41 @@ def run_job(heart, label, checks):
 
 USER_INBOX_NAME = "Apurbo"
 
+def is_brave_on():
+    import socket
+    port = 9222
+    with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as s:
+        s.settimeout(1.0) 
+        return s.connect_ex(("127.0.0.1",port)) == 0
 
+
+def kill_brave_from_here():
+    import psutil
+    if is_brave_on():
+        for conn in psutil.net_connections(kind="inet"):
+            if conn.laddr and conn.laddr.port == 9222 and conn.pid:
+                try:
+                    psutil.Process(conn.pid).terminate()
+                    return True
+                except Exception as e:
+                    print(e)
+        return False
 
 def heart_beat_loop(user_input_queue):
        
         AFK_THRESHOLD_SECONDS = 600
         PRESENCE_POLL_SECONDS = 5
         heart = Heart(afk_threshold_seconds=AFK_THRESHOLD_SECONDS)
-
+    
         def check_afk_monitor():
             global chat_bot
-            #print(f"user_afk {heart.is_afk}")
+
+            print(f"user_afk {heart.is_afk}")
             if heart.is_afk:
                 if chat_bot is None:
-                    gen = heart.chat_monitor_bot()
 
+                    gen = heart.chat_monitor_bot()
+                    
                     def worker():
                         while True:
                             try:
@@ -353,13 +387,13 @@ def heart_beat_loop(user_input_queue):
                             except StopIteration:
                                 break
                             if msg:
-                                #print(f"\nsend:\n{msg}")
+                                print(f"\nsend:\n{msg}")
                                 user_input_queue.put(f"SYSTEM: User is AFK,Reply to the inbox {USER_INBOX_NAME} using send_message_to_messenger tool, Context: {msg}")
                     threading.Thread(target=worker,daemon=True).start()
             else:
                 if chat_bot:
                     chat_bot = None
-                    
+
 
         def _forward_presence_alerts() -> None:
             while True:

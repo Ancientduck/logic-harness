@@ -17,9 +17,11 @@ import ptts
 ptts.set_num_threads(1)
 from speech_overlay import LOGICOverlay
 
-MODEL = "hf://gradium/phonon-31m-en"
+MODEL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logic_voices", "spencer")
 VOICE = "Spencer"
-QUANT = "q4_0"
+VOICE_CATALOG = MODEL
+#QUANT = "q4_0"
+QUANT = "q8"
 SAMPLE_RATE = 24000
 VOICE_SPEED = 1.0  # Speed multiplier: 1.0 default, 1.2 is 20% faster (pitch preserved)
 
@@ -45,7 +47,7 @@ def time_stretch(audio_arr, rate):
     norm_factor = syn_hop / (win_size / 2)
     return (out[:out_len] * norm_factor).astype(np.float32)
 
-tts_engine = ptts.TTS(MODEL, lang="en", quant=QUANT)
+tts_engine = ptts.TTS(MODEL, lang="en", quant=QUANT, voice_catalog=VOICE_CATALOG)
 
 speak_queue = queue.Queue()
 overlay_queue = queue.Queue()

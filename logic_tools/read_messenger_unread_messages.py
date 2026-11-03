@@ -352,14 +352,38 @@ def extract_messages(page, include_own=False):
             else:
                 continue
 
-        # Detect attached media images within message container / parent article / row
-        img_count = 0
+        # Detect attached media (reels, images) within message container / parent article / row
+        media_info = {"reels": [], "img_count": 0}
         try:
-            img_count = el.evaluate('''node => {
+            media_info = el.evaluate('''node => {
                 const container = node.closest("[role='article']") || node.closest("div[role='row']") || node.parentElement || node;
+                
+                // Find reel links
+                const reelAnchors = Array.from(container.querySelectorAll("a[href]")).filter(a => {
+                    const href = a.getAttribute("href") || "";
+                    return href.includes("/share/r/") || href.includes("/share/v/") || href.includes("/reel/") || href.includes("/watch/") || href.includes("instagram.com/reel");
+                });
+                
+                const reels = [];
+                for (const a of reelAnchors) {
+                    let href = a.getAttribute("href") || "";
+                    try {
+                        // Normalize link stripping tracking params if needed
+                        const urlObj = new URL(href, window.location.origin);
+                        href = urlObj.origin + urlObj.pathname;
+                    } catch (e) {}
+                    if (!reels.includes(href)) {
+                        reels.push(href);
+                    }
+                }
+
+                // Count regular images, ignoring images belonging to reels, emojis, or seen badges
                 const images = container.querySelectorAll("img");
                 let count = 0;
                 for (const img of images) {
+                    if (img.closest("a[href*='/share/r/'], a[href*='/share/v/'], a[href*='/reel/'], a[href*='/watch/'], a[href*='instagram.com/reel']")) {
+                        continue;
+                    }
                     const src = img.getAttribute("src") || "";
                     const alt = img.getAttribute("alt") || "";
                     if (src.includes("/images/emoji.php") || alt.startsWith("Seen by")) continue;
@@ -367,18 +391,25 @@ def extract_messages(page, include_own=False):
                         count++;
                     }
                 }
-                return count;
-            }''') or 0
+                
+    const allA = Array.from(container.querySelectorAll("a")).map(a => ({href: a.href, aria: a.getAttribute("aria-label"), text: a.innerText.slice(0, 40)}));
+    return { reels, img_count: count, allA, html: container.innerHTML.slice(0, 600) };
+    
+            }''') or {"reels": [], "img_count": 0}
         except Exception:
             pass
 
-        img_tag = ""
-        if img_count == 1:
-            img_tag = "[Image]"
-        elif img_count > 1:
-            img_tag = f"[{img_count} Images]"
+        media_tags = []
+        for r_url in media_info.get("reels", []):
+            media_tags.append(f"[REEL:{r_url}]")
 
-        parts = [p for p in (img_tag, text) if p]
+        img_count = media_info.get("img_count", 0)
+        if img_count == 1:
+            media_tags.append("[Image]")
+        elif img_count > 1:
+            media_tags.append(f"[{img_count} Images]")
+
+        parts = media_tags + ([text] if text else [])
         body = " ".join(parts)
 
         if body:

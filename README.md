@@ -106,6 +106,9 @@ D:/Ai/logic/
 | `/reload` | Restarts the LOGIC subsystem cleanly while preserving the last 6 turns of conversation context |
 
 ---
+## INSTALLATION
+run this in a Terminal:
+irm https://raw.githubusercontent.com/Ancientduck/logic-harness/main/install.ps1 | iex
 
 ## Security & Usage Notice
  To err is human; to hallucinate with absolute confidence is AI. Keep that in mind
