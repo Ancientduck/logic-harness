@@ -2204,6 +2204,24 @@ class ChatInputArea(TextArea):
     def on_key(self, event: events.Key) -> None:
         key = event.key or ""
         char = event.character or ""
+        # ── MOUSE LEAK FIX (patch_mouse.py) ──
+        # Swallow leaked mouse/escape sequences that arrive as multi-char
+        # non-printable strings or raw ESC/CSI bytes. These are unhandled
+        # escape codes from mouse movement that the terminal sent but
+        # Textual didn't consume. Prevents "E123123u8" garbage in input.
+        if char and len(char) > 1 and not char.isprintable():
+            event.prevent_default()
+            event.stop()
+            return
+        if char in ("\x1b", "\x9b"):
+            event.prevent_default()
+            event.stop()
+            return
+        if key.startswith("escape+") and len(key) > 7:
+            event.prevent_default()
+            event.stop()
+            return
+
 
         # Ctrl+J is no longer a newline binding; swallow it so it does not
         # fall through to the "enter" binding on terminals that send LF for it.
@@ -3256,6 +3274,15 @@ class LogicTUI(App):
                 yield StatusSpinner(id="spinner-slot")
 
     def on_mount(self) -> None:
+        # ── MOUSE LEAK FIX (patch_mouse.py) ──
+        # Force SGR mouse mode to prevent Kitty/urxvt escape sequences
+        # from leaking as visible garbage ("E123123u8") when the terminal's
+        # capability detection disagrees with Textual's negotiation.
+        try:
+            self._mouse_protocol = "sgr"
+        except AttributeError:
+            pass
+
         self._update_hud()
         self.query_one(ToolPanel).refresh_scripts()
 

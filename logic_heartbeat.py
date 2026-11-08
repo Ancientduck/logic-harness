@@ -343,7 +343,7 @@ def run_job(heart, label, checks):
     return report
 
 
-USER_INBOX_NAME = "Apurbo"
+USER_INBOX_NAME = "Apurbo" #* Change it to your inbox
 
 def is_brave_on():
     import socket
@@ -374,7 +374,7 @@ def heart_beat_loop(user_input_queue):
         def check_afk_monitor():
             global chat_bot
 
-            print(f"user_afk {heart.is_afk}")
+            #print(f"user_afk {heart.is_afk}")
             if heart.is_afk:
                 if chat_bot is None:
 

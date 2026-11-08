@@ -107,8 +107,8 @@ D:/Ai/logic/
 
 ---
 ## INSTALLATION
-run this in a Terminal:
-irm https://raw.githubusercontent.com/Ancientduck/logic-harness/main/install.ps1 | iex
+run this in a Terminal as admin:
+iex (irm https://raw.githubusercontent.com/Ancientduck/logic-harness/main/install.ps1)
 
 ## Security & Usage Notice
  To err is human; to hallucinate with absolute confidence is AI. Keep that in mind

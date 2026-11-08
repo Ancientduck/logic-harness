@@ -559,8 +559,8 @@ class Base_AI():
                 self.summary_history.append(f"Logic: {summary_prompt}")
                 summary_prompt = ''
 
-                if not ai_reply.strip():
-                    print("\n[LOGIC] Empty response received, retrying...")
+                if not ai_reply.strip() or bool(re.search(r"[|｜]{2}\s*DSML\s*[|｜]{2}", ai_reply)) :
+                    print("\n[LOGIC] BAD response received, retrying...")
                     ai_reply = ''
                     summary_prompt = ''
                     current_sentence = ''

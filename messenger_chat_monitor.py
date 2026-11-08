@@ -336,6 +336,20 @@ class MessengerBot:
         self.current_inbox = None
         self.drift_attempts = 0
 
+    def _seed_existing_messages(self):
+        try:
+            nodes = self.driver.find_elements(By.XPATH, "//div[@aria-roledescription='message']")
+            for node in nodes:
+                mid = node.get_attribute("data-message-id")
+                if mid:
+                    self.processed_ids.append(mid)
+                else:
+                    txt = (node.get_attribute("aria-label") or node.text or "").strip()
+                    if txt:
+                        self.processed_ids.append(hash(txt))
+        except Exception:
+            pass
+
     def connect_inbox(self, target_name):
         self.driver = start_driver()
         if not self.driver:
@@ -348,15 +362,7 @@ class MessengerBot:
         if "/t/" in cur_url:
             self.target_url = cur_url
             save_last_url(cur_url)
-        # Pre-seed processed IDs so historical messages already on screen aren't treated as new
-        try:
-            existing = self.driver.find_elements(By.XPATH, "//div[@aria-roledescription='message'][@data-message-id]")
-            for node in existing:
-                mid = node.get_attribute("data-message-id")
-                if mid and mid not in self.processed_ids:
-                    self.processed_ids.append(mid)
-        except Exception:
-            pass
+        self._seed_existing_messages()
         return success
 
     def switch_target(self, new_target):
@@ -369,14 +375,7 @@ class MessengerBot:
             if "/t/" in cur_url:
                 self.target_url = cur_url
                 save_last_url(cur_url)
-            try:
-                existing = self.driver.find_elements(By.XPATH, "//div[@aria-roledescription='message'][@data-message-id]")
-                for node in existing:
-                    mid = node.get_attribute("data-message-id")
-                    if mid and mid not in self.processed_ids:
-                        self.processed_ids.append(mid)
-            except Exception:
-                pass
+            self._seed_existing_messages()
         return True
 
     def start(self, target_chat=None, *args, **kwargs):
@@ -550,6 +549,30 @@ class MessengerBot:
                             "message_id": msg_id
                         }
                         self.pending_buffer.append(msg_item)
+
+                        # Messenger timestamps in aria-label: "At 1:58 PM," or "Jan 12, 2:30 PM", etc.
+                        # Parse time to ensure LOGIC calls are recent (within 60 seconds)
+                        time_match = re.search(r"\b(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)\b", aria_label, re.IGNORECASE)
+                        if time_match:
+                            try:
+                                hr = int(time_match.group(1))
+                                mn = int(time_match.group(2))
+                                sc = int(time_match.group(3)) if time_match.group(3) else 0
+                                meridiem = time_match.group(4).upper()
+                                if meridiem == "PM" and hr != 12:
+                                    hr += 12
+                                elif meridiem == "AM" and hr == 12:
+                                    hr = 0
+                                now_dt = datetime.datetime.now()
+                                msg_dt = now_dt.replace(hour=hr, minute=mn, second=sc, microsecond=0)
+                                diff = abs((now_dt - msg_dt).total_seconds())
+                                # Messenger typically displays hours and minutes (no seconds), so within current minute or ~60-90s window
+                                if diff > 90:
+                                    continue
+                            except Exception:
+                                pass
+                        elif bool(re.search(r"\b(yesterday|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|monday|tuesday|wednesday|thursday|friday|saturday|sunday|202[0-9])\b", aria_label, re.IGNORECASE)):
+                            continue
 
                         # Check if message contains LOGIC trigger
                         has_trigger = bool(re.search(r"\blogic\b", text_content, re.IGNORECASE) or re.search(r"\blogic\b", aria_label, re.IGNORECASE))

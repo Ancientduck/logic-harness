@@ -38,7 +38,7 @@ SIGNATURE = "-LOGIC, Apurbo's AI companion"
 # --- HEADLESS MODE ---
 # True  = run invisible, send, then auto-close the automation browser.
 # False = visible browser for testing; stays open, never auto-closes.
-HEADLESS = True
+HEADLESS = False
 _OWNED_DRIVER = None
 
 
