@@ -3,7 +3,6 @@
 .env.*
 !.env.example
 *.env
-.gemini_cookies.env
 # Credentials & OAuth Tokens
 logic_tools/oauth_token_files/
 oauth_token_files/
@@ -50,14 +49,14 @@ env/
 .idea/
 .DS_Store
 Thumbs.db
-logic_skills/*
-!logic_skills/logic_code_modification/
-!logic_skills/logic_code_modification/**
-!logic_skills/calendar_modification_tip/
-!logic_skills/calendar_modification_tip/**
-!logic_skills/screenshot_window/
-!logic_skills/screenshot_window/**
-
 # Telegram
 telegram_logic.py
 telegram_*.py
+
+logic_skills/*
+!logic_skills/logic_code_modification/
+!logic_skills/logic_code_modification/**
+
+# Local Test Files
+test.py
+to_do/
