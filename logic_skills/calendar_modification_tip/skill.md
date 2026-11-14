@@ -76,7 +76,7 @@ service.events().patch(
 ### 5. Replace Schedule Block (Delete & Insert)
 - Clean matching target window first, then batch insert the new schedule.
 
-## Apurbo's Routine Conventions
+## User's Routine Conventions
 - Classes first, exams second: `[Class Code] Class | Daily Exam: [Exam Code]`.
 - Shorthand codes: `P` = Physics, `C` = Chemistry, `M` = Math, `E` = English.
 - Descriptions: Full chapter titles and numbers in Bengali.

@@ -14,6 +14,7 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
+from dotenv import load_dotenv
 
 current_dir =  Path(__file__).resolve().parent
 
@@ -32,6 +33,12 @@ QUIET_SUBSTRINGS = [
 ]
 
 SCHEDULE_WINDOW_MINUTES = 30
+# Feature toggles for background monitoring (True to enable, False to disable)
+ENABLE_SCHEDULE_CHECK = True
+ENABLE_GMAIL_CHECK = True
+ENABLE_MESSENGER_CHECK = True
+ENABLE_PHONE_CHECK = True
+
 MAX_SEEN = 500
 
 
@@ -211,14 +218,46 @@ class Heart:
 
         return "\n".join(imminent)
 
+    def check_schedule_safe(self) -> str:
+        if not ENABLE_SCHEDULE_CHECK:
+            return ""
+        try:
+            return self.check_schedule()
+        except Exception as e:
+            return f"Schedule check failed: {e}. Note: If not configured or unwanted, ask LOGIC to disable ENABLE_SCHEDULE_CHECK in logic_heartbeat.py."
+
     def check_gmail(self) -> str:
-        return self._run_script("check_gmail.py")
+        if not ENABLE_GMAIL_CHECK:
+            return ""
+        try:
+            out = self._run_script("check_gmail.py")
+            if self._is_error(out) or "token" in out.lower() or "credential" in out.lower() or "error" in out.lower() or "not found" in out.lower():
+                return f"{out}\n(Note: If Gmail credentials are missing or not configured, ask LOGIC to set ENABLE_GMAIL_CHECK = False in logic_heartbeat.py)"
+            return out
+        except Exception as e:
+            return f"Gmail check encountered an error: {e}. Ask LOGIC to set ENABLE_GMAIL_CHECK = False in logic_heartbeat.py if unconfigured."
 
     def check_messenger(self) -> str:
-        return self._run_script("read_messenger_unread_messages.py", timeout=30)
+        if not ENABLE_MESSENGER_CHECK:
+            return ""
+        try:
+            out = self._run_script("read_messenger_unread_messages.py", timeout=30)
+            if self._is_error(out) or "error" in out.lower() or "not found" in out.lower():
+                return f"{out}\n(Note: If Messenger is not configured or signed in, ask LOGIC to set ENABLE_MESSENGER_CHECK = False in logic_heartbeat.py)"
+            return out
+        except Exception as e:
+            return f"Messenger check failed: {e}. Ask LOGIC to set ENABLE_MESSENGER_CHECK = False in logic_heartbeat.py if unconfigured."
 
     def check_phone(self) -> str:
-        return self._run_script("get_phone_notifications.py", timeout=15)
+        if not ENABLE_PHONE_CHECK:
+            return ""
+        try:
+            out = self._run_script("get_phone_notifications.py", timeout=15)
+            if self._is_error(out) or "adb" in out.lower() or "error" in out.lower() or "offline" in out.lower():
+                return f"{out}\n(Note: If phone/ADB is not connected, ask LOGIC to set ENABLE_PHONE_CHECK = False in logic_heartbeat.py)"
+            return out
+        except Exception as e:
+            return f"Phone check failed: {e}. Ask LOGIC to set ENABLE_PHONE_CHECK = False in logic_heartbeat.py if unconfigured."
 
     def _collect(self, section: str, out: str, results: dict):
         if not out:
@@ -343,7 +382,10 @@ def run_job(heart, label, checks):
     return report
 
 
-USER_INBOX_NAME = "Apurbo" #* Change it to your inbox
+
+load_dotenv(current_dir / ".env")
+raw_user = os.getenv("USER_NAME", "Apurbo")
+USER_INBOX_NAME = re.sub(r"\s*\([^)]*\)", "", raw_user).strip()
 
 def is_brave_on():
     import socket
@@ -447,16 +489,24 @@ def heart_beat_loop(user_input_queue):
                 slot = last_clock_slot(now)
                 if slot is not None and slot != last_slot:
                     last_slot = slot
-                    _run("Schedule", {"Schedule": heart.check_schedule})
+                    sched_checks = {}
+                    if ENABLE_SCHEDULE_CHECK:
+                        sched_checks["Schedule"] = heart.check_schedule_safe
+                    if sched_checks:
+                        _run("Schedule", sched_checks)
 
                 msg_slot = last_message_slot(now)
                 if msg_slot is not None and msg_slot != last_message_slot_seen:
                     last_message_slot_seen = msg_slot
-                    _run("Messages", {
-                        "Gmail": heart.check_gmail,
-                        "Messenger": heart.check_messenger,
-                        "Phone Notifications": heart.check_phone,
-                    })
+                    msg_checks = {}
+                    if ENABLE_GMAIL_CHECK:
+                        msg_checks["Gmail"] = heart.check_gmail
+                    if ENABLE_MESSENGER_CHECK:
+                        msg_checks["Messenger"] = heart.check_messenger
+                    if ENABLE_PHONE_CHECK:
+                        msg_checks["Phone Notifications"] = heart.check_phone
+                    if msg_checks:
+                        _run("Messages", msg_checks)
 
             except Exception as e:
                 sys.stderr.write(f"[TUI] heartbeat error: {e}\n")

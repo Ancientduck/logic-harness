@@ -1,5 +1,13 @@
 import datetime
 import os
+from pathlib import Path
+_env_path = Path(__file__).resolve().parent / ".env"
+if _env_path.exists():
+    from dotenv import load_dotenv
+    load_dotenv(_env_path)
+_RAW_USER = os.getenv("USER_NAME", "Apurbo")
+USER_CLEAN_NAME = re.sub(r"\s*\([^)]*\)", "", _RAW_USER).strip() or "Apurbo"
+
 import sys
 import time
 import socket
@@ -23,10 +31,10 @@ logging.basicConfig(level=logging.WARNING, format="%(asctime)s - %(levelname)s -
 logger = logging.getLogger("MessengerMonitor")
 
 POLL_INTERVAL = 5.0  # Polling interval in seconds
-BRAVE_PROFILE_DIR = r"C:\Users\USER\AppData\Local\BraveSoftware\Brave-Browser\LogicBrowserProfile"
-DEFAULT_BRAVE_PATH = r"C:\Users\USER\AppData\Local\BraveSoftware\Brave-Browser\Application\brave.exe"
+BRAVE_PROFILE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", r"C:\Users\USER\AppData\Local"), "BraveSoftware", "Brave-Browser", "LogicBrowserProfile")
+DEFAULT_BRAVE_PATH = os.path.join(os.environ.get("LOCALAPPDATA", r"C:\Users\USER\AppData\Local"), "BraveSoftware", "Brave-Browser", "Application", "brave.exe")
 
-DATA_DIR = Path(__file__).resolve().parent / "messenger_data"
+DATA_DIR = Path(__file__).resolve().parent / "logic_tools/messenger_data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 NICKNAMES_FILE = DATA_DIR / "messenger_nicknames.json"
 INBOX_URLS_FILE = DATA_DIR / "messenger_inbox_urls.json"
@@ -124,7 +132,7 @@ def start_driver():
         options.add_argument("--disable-gpu")
         options.add_argument("--no-first-run")
         options.add_argument("--no-default-browser-check")
-        driver_155 = r"C:\Users\USER\.cache\selenium\chromedriver\win64\155.0.8059.84\chromedriver.exe"
+        driver_155 = os.path.join(os.environ.get("USERPROFILE", r"C:\Users\USER"), ".cache", "selenium", "chromedriver", "win64", "155.0.8059.84", "chromedriver.exe")
         if os.path.exists(driver_155):
             service = ChromeService(executable_path=driver_155)
             driver = webdriver.Chrome(service=service, options=options)
@@ -539,7 +547,7 @@ class MessengerBot:
 
                         # Ignore any message signed by LOGIC
                         lower_text = text_content.lower()
-                        if "apurbo's ai companion" in lower_text or "-logic" in lower_text or "- logic" in lower_text:
+                        if f"{USER_CLEAN_NAME.lower()}'s ai companion" in lower_text or "-logic" in lower_text or "- logic" in lower_text:
                             continue
 
                         msg_item = {
@@ -652,7 +660,7 @@ def start_monitor_service(inbox_name):
     return None
 
 if __name__ == "__main__":
-    target = sys.argv[1] if len(sys.argv) > 1 else "Apurbo Mostafiz"
+    target = sys.argv[1] if len(sys.argv) > 1 else USER_CLEAN_NAME
     bot = start_monitor_service(target)
     if bot:
         try:

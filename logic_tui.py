@@ -679,30 +679,7 @@ def push_hall_event(agent: str, kind: str, payload: str):
     hall_stream_queue.put((agent.lower(), kind, payload))
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  REAL BACKEND HOOKS
-# ══════════════════════════════════════════════════════════════════════════════
-#
-#  Design contract (R3):
-#
-#    * logic.py owns execution. Subprocess spawning, validate(), tool
-#      dispatch, memory, reminders, GUI control, agent dispatch — none of
-#      that is reimplemented here.
-#
-#    * The TUI installs a single `_line_sink` on the backend instance. Your
-#      patched `logic.py::run_code_streamed` calls `self._line_sink(line)`
-#      for every line the child process emits; the sink funnels those lines
-#      into a queue that the top-level stream merger drains.
-#
-#    * If your logic.py doesn't call `_line_sink` (older version, different
-#      patch shape), the TUI detects that and installs a stdout-tee fallback
-#      so live output still arrives. Nothing else changes.
-#
-#    * Top-level `call_logic` is wrapped exactly once (at depth 1) to merge
-#      sink lines with the generator's own yields. Nested `call_logic`
-#      hops — memory_manager / gui_controller / reminder / dispatch — get a
-#      cosmetic <tool_result> echo so users see what tools returned without
-#      watching the LLM's reply.
+
 
 logic_ai = None
 voice_module = None
@@ -3494,9 +3471,9 @@ class LogicTUI(App):
     def _set_tab(self, pane_id: str):
         tabs = self.query_one("#tabs", TabbedContent)
         tabs.active = pane_id
-        if pane_id == "pane-memory":
-            self.query_one(MemoryPanel).refresh_memories()
-        elif pane_id == "pane-tools":
+        # if pane_id == "pane-memory":
+        #     self.query_one(MemoryPanel).refresh_memories()
+        if pane_id == "pane-tools":
             self.query_one(ToolPanel).refresh_scripts()
         self.action_focus_input()
 
@@ -3593,7 +3570,7 @@ class LogicTUI(App):
         else:
             self.call_from_thread(self._set_spinner, "Initializing system...")
             prompt = (
-                "system: user is online. Greet briefly. "
+                "system: user is online. Greet briefly along with relevant news. "
                 "If the schedule below is already covered in the previous summary, "
                 "do not repeat those items — ask about the user's current activity "
                 "or mood instead. "

@@ -39,9 +39,7 @@ LOGIC acts as an autonomous operational shell connecting local/cloud LLMs with n
 - **Groq & Cloud Fallbacks**: Autonomous history compacting and context summarization agents with automated fallback routines.
 
 ### 2. Tiered Persistent Memory (`logic_memory_manager.py`)
-- **SQLite + FTS5 Full-Text Search**: Sentence-level chunking with Porter stemming and Jaccard similarity scoring.
-- **Passive & Active Recall**: Contextually injects high-importance memories while filtering ubiquitous tokens to eliminate false positives.
-- **Dynamic Flag Parsing**: Granular memory control (`--type episodic|semantic|procedural|plan`, `--imp 0.0-1.0`, `--exp YYYY-MM-DD|never`).
+**STILL IN PROGRESS*
 
 ### 3. Asynchronous Multi-Agent Delegation (`logic_hall.py`)
 - **Worker Registry**: Dispatch parallel background subtasks to specialized peer agents (**Vinci** and **Sage**).
@@ -77,7 +75,6 @@ D:/Ai/logic/
 |-- tool_router.py               # Heuristic tool prediction engine
 |-- validator.py                 # Generated Python code validation & sanitizer
 |-- logic_hall.py                # Multi-agent worker orchestration (Vinci & Sage)
-|-- gui_controller.py            # Windows UI element hook and automation
 |-- logic_tools/                 # Python automation scripts & API clients
 |   |-- google_calendar_drive_oauth.json        # Google Calendar / Drive credentials
 |   |-- send_message_to_messenger.py

@@ -16,12 +16,14 @@ oauth_token_files/
 *.pfx
 *.p12
 # Memory & Local DBs (Keep folder tracked via .gitkeep)
-memory/*.db
-memory/*.sqlite
-memory/*.sqlite3
-memory/summaries/*.txt
+memory/*
 !memory/.gitkeep
+memory/summaries/*
 !memory/summaries/.gitkeep
+*.bin
+*.db
+*.sqlite
+*.sqlite3
 memory_data/
 # Private Folders & Backups
 others/

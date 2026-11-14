@@ -22,7 +22,9 @@ def is_chrome_debugging_running(port=9222):
 
 def launch_fresh_chrome(port=9222):
     options = Options()
-    options.binary_location = r"C:\Users\USER\AppData\Local\BraveSoftware\Brave-Browser\Application\brave.exe"
+    local_app_data = os.environ.get("LOCALAPPDATA", r"C:\Users\USER\AppData\Local")
+    brave_path = os.path.join(local_app_data, "BraveSoftware", "Brave-Browser", "Application", "brave.exe")
+    options.binary_location = brave_path if os.path.exists(brave_path) else r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
     profile_dir = os.path.expandvars(r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\LogicBrowserProfile")
     options.add_argument(f"user-data-dir={profile_dir}")
     options.add_argument(f"--remote-debugging-port={port}")

@@ -223,114 +223,115 @@ class ActivityMonitor:
         return " ".join(res)
 
     def monitor(self):
-        while True:
-            idle_now, inactivity_time = self.check_user_idle()
+        with auto.UIAutomationInitializerInThread():
+            while True:
+                idle_now, inactivity_time = self.check_user_idle()
 
-            if idle_now:
-                if not self.is_idle:
-                    # User transitioned to IDLE
-                    self.is_idle = True
-                    if self._tracking and self.last_hwnd is not None:
-                        active_elapsed = max(0.0, time.perf_counter() - self.start_time - inactivity_time)
-                        if active_elapsed > 0.1:
-                            key = self.last_proc_name
-                            self.history[key] = self.history.get(key, 0) + active_elapsed
-
-                        yield (
-                            self.last_title,
-                            self.last_proc_name,
-                            self.last_path,
-                            self.last_url,
-                            active_elapsed,
-                            self.history.get(self.last_proc_name, 0),
-                            "IDLE",
-                            "idle",
-                            "",
-                            ""
-                        )
-                time.sleep(1.0)
-                continue
-
-            if self.is_idle:
-                # User resumed activity from IDLE
-                self.is_idle = False
-                self.start_time = time.perf_counter()
-
-            hwnd, title, proc_name, path = self.get_current_focus()
-
-            is_valid = not (
-                proc_name in self.ignored_processes
-                or not title.strip()
-            )
-
-            if is_valid:
-
-                if (
-                    hwnd != self.last_hwnd
-                    or title != self.last_title
-                    or path != self.last_path
-                ):
-
-                    url = ""
-
-                    if proc_name in self.browsers:
-                        url = self._get_browser_url(
-                            hwnd,
-                            proc_name
-                        )
-
-                    if (
-                        self._tracking
-                        and self.last_hwnd is not None
-                    ):
-                        elapsed = (
-                            time.perf_counter()
-                            - self.start_time
-                        )
-
-                        if elapsed > 0.1:
-
-                            key = self.last_proc_name
-
-                            self.history[key] = (
-                                self.history.get(key, 0)
-                                + elapsed
-                            )
+                if idle_now:
+                    if not self.is_idle:
+                        # User transitioned to IDLE
+                        self.is_idle = True
+                        if self._tracking and self.last_hwnd is not None:
+                            active_elapsed = max(0.0, time.perf_counter() - self.start_time - inactivity_time)
+                            if active_elapsed > 0.1:
+                                key = self.last_proc_name
+                                self.history[key] = self.history.get(key, 0) + active_elapsed
 
                             yield (
                                 self.last_title,
                                 self.last_proc_name,
                                 self.last_path,
                                 self.last_url,
-                                elapsed,
-                                self.history[key],
-                                title,
-                                proc_name,
-                                path,
-                                url
+                                active_elapsed,
+                                self.history.get(self.last_proc_name, 0),
+                                "IDLE",
+                                "idle",
+                                "",
+                                ""
+                            )
+                    time.sleep(1.0)
+                    continue
+
+                if self.is_idle:
+                    # User resumed activity from IDLE
+                    self.is_idle = False
+                    self.start_time = time.perf_counter()
+
+                hwnd, title, proc_name, path = self.get_current_focus()
+
+                is_valid = not (
+                    proc_name in self.ignored_processes
+                    or not title.strip()
+                )
+
+                if is_valid:
+
+                    if (
+                        hwnd != self.last_hwnd
+                        or title != self.last_title
+                        or path != self.last_path
+                    ):
+
+                        url = ""
+
+                        if proc_name in self.browsers:
+                            url = self._get_browser_url(
+                                hwnd,
+                                proc_name
                             )
 
-                    self.last_hwnd = hwnd
-                    self.last_title = title
-                    self.last_proc_name = proc_name
-                    self.last_path = path
-                    self.last_url = url
+                        if (
+                            self._tracking
+                            and self.last_hwnd is not None
+                        ):
+                            elapsed = (
+                                time.perf_counter()
+                                - self.start_time
+                            )
 
-                    self.start_time = time.perf_counter()
+                            if elapsed > 0.1:
 
-                    self._tracking = True
+                                key = self.last_proc_name
 
-            else:
+                                self.history[key] = (
+                                    self.history.get(key, 0)
+                                    + elapsed
+                                )
 
-                if not self._tracking:
-                    self.last_hwnd = ""
-                    self.last_title = ""
-                    self.last_proc_name = ""
-                    self.last_path = "None"
-                    self.last_url = ""
-                    self.start_time = time.perf_counter()
+                                yield (
+                                    self.last_title,
+                                    self.last_proc_name,
+                                    self.last_path,
+                                    self.last_url,
+                                    elapsed,
+                                    self.history[key],
+                                    title,
+                                    proc_name,
+                                    path,
+                                    url
+                                )
 
-            time.sleep(0.5)
+                        self.last_hwnd = hwnd
+                        self.last_title = title
+                        self.last_proc_name = proc_name
+                        self.last_path = path
+                        self.last_url = url
+
+                        self.start_time = time.perf_counter()
+
+                        self._tracking = True
+
+                else:
+
+                    if not self._tracking:
+                        self.last_hwnd = ""
+                        self.last_title = ""
+                        self.last_proc_name = ""
+                        self.last_path = "None"
+                        self.last_url = ""
+                        self.start_time = time.perf_counter()
+
+                time.sleep(0.5)
 
 
     def get_live_report(self):

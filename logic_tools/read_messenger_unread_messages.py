@@ -100,11 +100,18 @@ def _uses_automation_profile(proc, profile_dir):
 
 
 def is_chrome_running():
-    """Only detect Brave using the configured LogicBrowserProfile."""
+    """Detect Brave using LogicBrowserProfile AND listening on debugging port."""
+    import socket
+    found_proc = False
     for proc in psutil.process_iter(["name", "cmdline"]):
         if _uses_automation_profile(proc, USER_DATA_DIR):
-            return True
-    return False
+            found_proc = True
+            break
+    if not found_proc:
+        return False
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        return s.connect_ex(("127.0.0.1", DEBUG_PORT)) == 0
 
 
 def _cleanup_launched_chrome(chrome_process, profile_dir):
@@ -316,94 +323,101 @@ def wait_conversation_loaded(page, convo_name):
 
 
 def extract_messages(page, include_own=False):
-    main = page.query_selector("div[role='main']")
+    # Single-pass in-browser extraction to eliminate Playwright roundtrips and DOM traversal overhead.
+    # Returns messages with their aria timestamp, sender, and content.
+    # For unread checks (include_own=False), it strictly isolates new messages and filters out old chats.
+    extracted_raw = page.evaluate('''() => {
+        const main = document.querySelector("div[role='main']");
+        if (!main) return { dividerIndex: -1, items: [] };
 
-    if not main:
+        // Messenger puts an 'Unread messages' or 'New messages' divider in the thread
+        const dividerEls = Array.from(main.querySelectorAll("span, div")).filter(el => {
+            const txt = (el.textContent || "").trim().toLowerCase();
+            return txt === "unread messages" || txt === "new messages";
+        });
+        const divider = dividerEls.length > 0 ? dividerEls[0] : null;
+
+        const msgEls = main.querySelectorAll("[aria-label*='Message sent']");
+        const items = [];
+        let dividerPassed = !divider;
+
+        for (const el of msgEls) {
+            // Check if this message comes after the unread divider
+            let isAfterDivider = true;
+            if (divider) {
+                const comp = divider.compareDocumentPosition(el);
+                // comp & Node.DOCUMENT_POSITION_FOLLOWING (4) means el is after divider
+                isAfterDivider = Boolean(comp & 4);
+            }
+
+            const aria = el.getAttribute("aria-label") || "";
+            const container = el.closest("[role='article']") || el.closest("div[role='row']") || el.parentElement || el;
+
+            const reelAnchors = Array.from(container.querySelectorAll("a[href]")).filter(a => {
+                const href = a.getAttribute("href") || "";
+                return href.includes("/share/r/") || href.includes("/share/v/") || href.includes("/reel/") || href.includes("/watch/") || href.includes("instagram.com/reel");
+            });
+
+            const reels = [];
+            for (const a of reelAnchors) {
+                let href = a.getAttribute("href") || "";
+                try {
+                    const u = new URL(href, window.location.origin);
+                    href = u.origin + u.pathname;
+                } catch(e) {}
+                if (!reels.includes(href)) reels.push(href);
+            }
+
+            const images = container.querySelectorAll("img");
+            let imgCount = 0;
+            for (const img of images) {
+                if (img.closest("a[href*='/share/r/'], a[href*='/share/v/'], a[href*='/reel/'], a[href*='/watch/'], a[href*='instagram.com/reel']")) continue;
+                const src = img.getAttribute("src") || "";
+                const alt = img.getAttribute("alt") || "";
+                if (src.includes("/images/emoji.php") || alt.startsWith("Seen by")) continue;
+                if (alt === "Open photo" || src.startsWith("data:image/") || (src.includes("scontent") && img.clientWidth > 50)) {
+                    imgCount++;
+                }
+            }
+
+            items.push({ aria, reels, imgCount, isAfterDivider });
+        }
+        return { hasDivider: Boolean(divider), items };
+    }''')
+
+    if not extracted_raw or not extracted_raw.get("items"):
         return []
 
-    msg_els = main.query_selector_all("[aria-label*='Message sent']")
+    has_divider = extracted_raw.get("hasDivider", False)
+    items = extracted_raw["items"]
 
-    if not msg_els:
-        return []
-
-    pattern_with_text = re.compile(
-        r"Enter, Message sent .+? by (.+?): (.+)",
-        re.DOTALL
-    )
-    pattern_no_text = re.compile(
-        r"Enter, Message sent .+? by (.+)",
-        re.DOTALL
-    )
+    # Regex captures timestamp: "Enter, Message sent <time_str> by <sender>: <text>"
+    pattern_with_text = re.compile(r"Enter, Message sent (.+?) by (.+?): (.+)", re.DOTALL)
+    pattern_no_text = re.compile(r"Enter, Message sent (.+?) by (.+)", re.DOTALL)
 
     parsed = []
-
-    for el in msg_els:
-        aria = el.get_attribute("aria-label") or ""
+    for item in items:
+        aria = item.get("aria", "")
         m = pattern_with_text.match(aria)
-
+        time_str = ""
         if m:
-            sender = m.group(1).strip()
-            text = m.group(2).strip()
+            time_str = m.group(1).strip()
+            sender = m.group(2).strip()
+            text = m.group(3).strip()
         else:
-            m_no_txt = pattern_no_text.match(aria)
-            if m_no_txt:
-                sender = m_no_txt.group(1).strip()
+            m_no = pattern_no_text.match(aria)
+            if m_no:
+                time_str = m_no.group(1).strip()
+                sender = m_no.group(2).strip()
                 text = ""
             else:
                 continue
 
-        # Detect attached media (reels, images) within message container / parent article / row
-        media_info = {"reels": [], "img_count": 0}
-        try:
-            media_info = el.evaluate('''node => {
-                const container = node.closest("[role='article']") || node.closest("div[role='row']") || node.parentElement || node;
-                
-                // Find reel links
-                const reelAnchors = Array.from(container.querySelectorAll("a[href]")).filter(a => {
-                    const href = a.getAttribute("href") || "";
-                    return href.includes("/share/r/") || href.includes("/share/v/") || href.includes("/reel/") || href.includes("/watch/") || href.includes("instagram.com/reel");
-                });
-                
-                const reels = [];
-                for (const a of reelAnchors) {
-                    let href = a.getAttribute("href") || "";
-                    try {
-                        // Normalize link stripping tracking params if needed
-                        const urlObj = new URL(href, window.location.origin);
-                        href = urlObj.origin + urlObj.pathname;
-                    } catch (e) {}
-                    if (!reels.includes(href)) {
-                        reels.push(href);
-                    }
-                }
-
-                // Count regular images, ignoring images belonging to reels, emojis, or seen badges
-                const images = container.querySelectorAll("img");
-                let count = 0;
-                for (const img of images) {
-                    if (img.closest("a[href*='/share/r/'], a[href*='/share/v/'], a[href*='/reel/'], a[href*='/watch/'], a[href*='instagram.com/reel']")) {
-                        continue;
-                    }
-                    const src = img.getAttribute("src") || "";
-                    const alt = img.getAttribute("alt") || "";
-                    if (src.includes("/images/emoji.php") || alt.startsWith("Seen by")) continue;
-                    if (alt === "Open photo" || src.startsWith("data:image/") || (src.includes("scontent") && img.clientWidth > 50)) {
-                        count++;
-                    }
-                }
-                
-    const allA = Array.from(container.querySelectorAll("a")).map(a => ({href: a.href, aria: a.getAttribute("aria-label"), text: a.innerText.slice(0, 40)}));
-    return { reels, img_count: count, allA, html: container.innerHTML.slice(0, 600) };
-    
-            }''') or {"reels": [], "img_count": 0}
-        except Exception:
-            pass
-
         media_tags = []
-        for r_url in media_info.get("reels", []):
+        for r_url in item.get("reels", []):
             media_tags.append(f"[REEL:{r_url}]")
 
-        img_count = media_info.get("img_count", 0)
+        img_count = item.get("imgCount", 0)
         if img_count == 1:
             media_tags.append("[Image]")
         elif img_count > 1:
@@ -413,30 +427,74 @@ def extract_messages(page, include_own=False):
         body = " ".join(parts)
 
         if body:
-            parsed.append((sender, body))
+            parsed.append({
+                "sender": sender,
+                "body": body,
+                "time": time_str,
+                "after_divider": item.get("isAfterDivider", True)
+            })
 
-    own_names = {"you", "apurbo", "apurbo mostafiz"}
-    result = []
-    own_allowed = 1
+    own_names = {"you"}
 
-    for sender, text in reversed(parsed):
-        if not include_own and sender.lower() in own_names:
-            if own_allowed > 0:
-                own_allowed -= 1
-            else:
-                break
+    # --- FILTERING LOGIC ---
+    # When include_own=True (targeted inspect mode): keep recent batch up to MAX_MSGS.
+    if include_own:
+        result = [(p["sender"], p["body"]) for p in parsed[-MAX_MSGS:]]
+        return result
 
-        result.append((sender, text))
+    # When include_own=False (unread monitoring mode):
+    # Rule 1: If Messenger showed an unread/new messages divider, strictly keep only messages after it.
+    if has_divider:
+        filtered = [p for p in parsed if p["after_divider"]]
+        # If user replied after the divider, drop messages prior to user's reply
+        last_own_idx = -1
+        for idx, p in enumerate(filtered):
+            if p["sender"].lower() in own_names:
+                last_own_idx = idx
+        if last_own_idx != -1:
+            filtered = filtered[last_own_idx + 1:]
+        return [(p["sender"], p["body"]) for p in filtered]
 
-        if len(result) >= MAX_MSGS:
-            break
+    # Rule 2: If no unread divider, find the last message sent by user.
+    # Everything before (and including) user's last message is already seen/responded to.
+    last_own_idx = -1
+    for idx, p in enumerate(parsed):
+        if p["sender"].lower() in own_names:
+            last_own_idx = idx
 
-    result.reverse()
-    return result
+    if last_own_idx != -1:
+        # User spoke in this visible window: strictly take incoming messages sent AFTER user's last reply
+        candidates = parsed[last_own_idx + 1:]
+    else:
+        # User didn't speak in this recent window: take messages from the latest contiguous incoming batch
+        candidates = parsed[-MAX_MSGS:]
+
+    # Rule 3: Date transition filter on candidates.
+    # In Messenger aria labels:
+    # Today's messages are just time: e.g. "10:14 PM", "2:05 AM"
+    # Older messages contain day/date words: e.g. "Mon 8:30 PM", "Yesterday at 9:00 PM", "Nov 10 at 4:00 PM"
+    # If the newest incoming message is today (time only), discard any preceding messages that have day/date markers.
+    if candidates:
+        latest_time = candidates[-1]["time"].lower()
+        # Check if the latest message was sent today (does not contain weekday/date keywords)
+        day_indicators = ["mon", "tue", "wed", "thu", "fri", "sat", "sun", "yesterday", "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+        is_latest_today = not any(day in latest_time for day in day_indicators)
+
+        if is_latest_today:
+            # Drop older messages from prior days
+            valid_candidates = []
+            for p in candidates:
+                p_time = p["time"].lower()
+                if not any(day in p_time for day in day_indicators):
+                    valid_candidates.append(p)
+            candidates = valid_candidates
+
+    return [(p["sender"], p["body"]) for p in candidates]
+
 
 
 def get_convo_header_name(page):
-    """Read the actual conversation name from the main panel header."""
+    """Read the actual conversation name from the main panel header and resolve nickname if present."""
 
     def _get():
         selectors = [
@@ -458,7 +516,11 @@ def get_convo_header_name(page):
 
         return None
 
-    return poll_until(_get, timeout=5, interval=0.2)
+    raw_header = poll_until(_get, timeout=5, interval=0.2)
+    if raw_header:
+        real_name, _ = resolve_name(raw_header)
+        return real_name
+    return None
 
 
 def main(target_name=None):
@@ -478,6 +540,13 @@ def main(target_name=None):
                     f"--remote-debugging-port={DEBUG_PORT}",
                     "--no-first-run",
                     "--no-default-browser-check",
+                    "--disable-gpu",
+                    "--disable-extensions",
+                    "--mute-audio",
+                    "--disable-background-networking",
+                    "--disable-component-update",
+                    "--renderer-process-limit=2",
+                    '--js-flags="--max-old-space-size=512"',
                 ]
 
                 if HEADLESS:
@@ -564,10 +633,7 @@ def main(target_name=None):
                     print("No unread messages.")
                     return
 
-                print(
-                    f"Found {len(unread)} unread: "
-                    f"{', '.join(unread)}\n"
-                )
+                # Suppress pre-scan announcement until conversations are validated
 
                 for target in unread:
                     if not find_and_click(page, target):
@@ -579,6 +645,11 @@ def main(target_name=None):
                     msgs = extract_messages(page)
 
                     if msgs:
+                        # If the most recent message in the thread is from user/you, skip reporting this inbox
+                        last_sender = msgs[-1][0].strip().lower()
+                        own_senders = {"you"}
+                        if last_sender in own_senders:
+                            continue
                         results[header] = msgs
 
             if not results:
@@ -595,6 +666,7 @@ def main(target_name=None):
                     total += len(msgs)
 
                 print(
+                    f"\nAction required: Autonomously reply to messages not needing user's opinion via send_message_to_messenger.py,Do Not send automated messages to group chats;escalate the rest."
                     f"\nTotal: {total} message(s) "
                     f"in {len(results)} conversation(s)"
                 )

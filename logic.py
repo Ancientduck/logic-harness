@@ -8,9 +8,11 @@ import win32con
 
 from user_voice import get_voice
 from datetime import datetime
-from logic_memory_manager import memorymanager, _parse_flags
+
 
 from logic_prompt import build_system_prompt
+from memory_system import reset_sent
+from memory_system import call_tool as memory_tool
 
 from rich.console import Console
 from rich.style import Style
@@ -19,7 +21,6 @@ load_dotenv()
 
 from openai import OpenAI,OpenAIError
 from activity_monitor import monitor
-from gui_controller import Control
 
 
 from tool_router import guess_tool
@@ -363,7 +364,7 @@ class Base_AI():
 
             summary = groq_caller.call_groq(f'summarize this conversation briefly. ignore anything in relevant memory:\n{history}')
             #print(f'\n**{summary}**\n')
-            memorymanager.reset_sent()
+            reset_sent()
             self.chat = OpenAIChatSession(
                 client=client,
                 model=MODEL,
@@ -463,7 +464,8 @@ class Base_AI():
 
         if is_text_prompt and not prompt.startswith('/'):
             if not prompt.startswith('SCRIPT_RESULT:') and self.turn_count > 1:
-                relevant_memory = memorymanager.get_relevant(prompt)
+                res = memory_tool("memory_retrieve", prompt=prompt)
+                relevant_memory = res.get("rendered") or ""
 
         if relevant_memory:
             final_prompt = f'relevant_memory:[{relevant_memory}]'
@@ -476,6 +478,15 @@ class Base_AI():
 
         if possible_tool:
             final_prompt += f'\ntool_reminder:[{possible_tool}]'
+
+        if self.turn_count >= 10:
+
+            memory_reminder = (
+                "SYSTEM: [Memory check] Review the conversation so far. Is there anything durable worth saving (user facts, preferences, corrections, project conventions)? "
+                "If yes, call memory_manager with 'save'. "
+                "If nothing, ignore this msg"
+            )
+            final_prompt += f'\n{memory_reminder}'
 
         final_prompt += f'\n{prompt}'
 
@@ -559,8 +570,9 @@ class Base_AI():
                 self.summary_history.append(f"Logic: {summary_prompt}")
                 summary_prompt = ''
 
-                if not ai_reply.strip() or bool(re.search(r"[|｜]{2}\s*DSML\s*[|｜]{2}", ai_reply)) :
+                if not ai_reply.strip() or ai_reply == "...":
                     print("\n[LOGIC] BAD response received, retrying...")
+                    yield f"\nLOGIC returned an empty response retrying.."
                     ai_reply = ''
                     summary_prompt = ''
                     current_sentence = ''
@@ -617,7 +629,6 @@ class Base_AI():
             "save": self.save_script,
             "search_net": self.search_net,
             "memory_manager": self.memory_manager,
-            "gui_connector": self.gui_controller,
             "set_reminder": self.reminder,
             "dispatch": self.dispatch,
             "read_skill": self.read_skill,
@@ -699,82 +710,62 @@ class Base_AI():
             results.append(f"{target}: dispatched")
         user_input_queue.put("[dispatch] " + " | ".join(results))
     
-    def memory_manager(self,args):
-        function_name,text = args[0],args[1]
-        if function_name == 'save':
-            t, f = _parse_flags(text)
-            result = memorymanager.save(t, f.get("memory_type", "semantic"),
-                        f.get("importance", 0.5), f.get("expires_days"))
-            user_input_queue.put(str(result))
 
-        elif function_name == 'search':
-            t, f = _parse_flags(text)
-            result = memorymanager.search(t, 5, f.get("memory_type"), f.get("min_importance"))
-            memorymanager.reset_sent()
-            user_input_queue.put("\n".join(result) if isinstance(result, list) else str(result))
-
-        elif function_name == 'delete':
-            user_input_queue.put(str(memorymanager.delete(text)))
-
-        elif function_name == 'core':
-            r = memorymanager.get_core()
-            user_input_queue.put("\n".join(r) if r else "No core memories.")
-
-        elif function_name == 'all':
-            user_input_queue.put("\n".join(memorymanager.show_all()))
-
-        elif function_name == 'stats':
-            user_input_queue.put("\n".join(memorymanager.stats()))
-
-        elif function_name == 'set':
-            mid, flag_str = text.split(" ", 1)
-            _, f = _parse_flags(flag_str)
-            user_input_queue.put(str(memorymanager.update(int(mid), f.get("importance"),
-                        f.get("memory_type"), f.get("expires_days"), f.get("never_expires", False))))
-
+    def memory_manager(self, args):
+        """Format: ["function_name", ["arg1", "arg2", ...]]"""
+        if not isinstance(args, (list, tuple)) or not args:
+            result = {"ok": False, "error": "args must be [name, [params...]]"}
         else:
-            user_input_queue.put("Unknown memory command: " + function_name)
-            
+            name = args[0]
+            a = list(args[1]) if len(args) > 1 and isinstance(args[1], (list, tuple)) else []
+            print(f"\nmemory:{name} {a}")
+            try:
+                if name == "save" and len(a) >= 1:
+                    result = memory_tool("memory_save", {"text": a[0]})
+
+                elif name == "find":
+                    raw = memory_tool("memory_retrieve", {"prompt": a[0]})
+                    mems = raw.get("memories", [])
+                    result = "\n".join(f"[id={m['id']}] {m['text']}" for m in mems) or "none"
+
+                elif name == "update" and len(a) >= 2:
+                    target, text = a[0], a[1]
+                    payload = {"text": text}
+                    payload["id" if str(target).isdigit() else "match"] = (
+                        int(target) if str(target).isdigit() else target
+                    )
+                    result = memory_tool("memory_update", payload)
+
+                elif name == "delete" and len(a) >= 1:
+                    target = a[0]
+                    result = memory_tool(
+                        "memory_delete",
+                        {"target": int(target) if str(target).isdigit() else target},
+                    )
+
+                elif name in ("save", "find", "update", "delete"):
+                    result = {"ok": False, "error": f"'{name}' got wrong args: {a}"}
+
+                else:
+                    result = {"ok": False, "error": f"unknown function '{name}'",
+                            "allowed": ["save", "find", "update", "delete"]}
+            except Exception as exc:  # belt-and-braces; memory_tool shouldn't raise
+                result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        try:
+            if not result.get("ok"):
+                print(f"memory_result (error): {result}")
+        except Exception as e:
+            print(f"something went wrong {e}")
+        user_input_queue.put(
+            f"SCRIPT_RESULT: {json.dumps(result, ensure_ascii=False, default=str)}"
+        )
+        
     def chat_monitor(self,args):
         target_inbox = args[0]
         start_monitor(target_inbox)
         yield f"[Monitor] Connected to {target_inbox}"
 
-    def gui_controller(self, args):
-        parts = args.split(':', 1)
-        args_str = parts[1] if len(parts) > 1 else ""
-        args = [a.strip() for a in args_str.split('|')]
 
-        func = args[0] if args else ""
-        print('\ncontroller invoked')
-        if not hasattr(self, 'gui_control'):
-            self.gui_control = Control()
-
-        if func == 'connect':
-            window_title = args[1] if len(args) > 1 else ""
-            buttons = self.gui_control.connect(window_title)
-            result = f"[GUI] Connected to {window_title}. {len(buttons)} buttons found:\n" + ", ".join(buttons)
-            print(f'\n{result}')
-            user_input_queue.put(result)
-
-        elif func == 'click':
-            button_name = args[1] if len(args) > 1 else ""
-            click_type = args[2] if len(args) > 2 else "left"
-            success, new_buttons = self.gui_control.click(button_name, click_type)
-            if success:
-                result = f"[GUI] Clicked: {button_name} ({click_type})"
-                if new_buttons:
-                    result += f"\n[GUI] New buttons: " + ", ".join(new_buttons)
-                else:
-                    result += f"\n[GUI] No new buttons"
-            else:
-                result = f"[GUI] Not found: {button_name}"
-            print(f'\n{result}')
-            user_input_queue.put(result)
-
-        else:
-            user_input_queue.put(f"[GUI] Unknown function: {func}")
-        
     def search_net(self,args):
         from search_net import ask_search_net
         print('\nsearching the net...')

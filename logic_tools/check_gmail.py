@@ -1,3 +1,4 @@
+from pathlib import Path
 import os
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -11,7 +12,7 @@ SCOPES = [
 ]
 
 def get_unread_gmail(mark_as_read=True):
-    creds_path = r'D:/Ai/logic_backup_27-oct-26/logic_tools/oauth_token_files/google_calendar_drive_oauth.json'
+    creds_path = Path(__file__).resolve().parent / "oauth_token_files" / "google_calendar_drive_oauth.json"
     creds = None
     if os.path.exists(creds_path):
         creds = Credentials.from_authorized_user_file(creds_path, SCOPES)

@@ -1,4 +1,4 @@
-"""personal_news.py - fast personalized news aggregator for Apurbo.
+"""personal_news.py - fast personalized news aggregator.
 Concurrent Google News RSS fetch, dedup, recency filter, real-link resolution, noise filtering, and a seen-ledger.
 Run:   python personal_news.py
 Reset: python personal_news.py --reset
@@ -19,6 +19,7 @@ KEYWORDS = [
     "HSC result Bangladesh",
     "Bangladesh education ministry",
 ]
+USE_BLOCKLIST = False
 BLOCKLIST = [
     "samsung", "galaxy", "study in", "medical education", "russian medical",
     "sponsored", "advertisement", "buy now", "promo", "discount",
@@ -28,6 +29,7 @@ BLOCKLIST = [
 ]
 MAX_AGE_HOURS = 24          # hard ceiling; SAME_DAY_ONLY is stricter
 SAME_DAY_ONLY = True        # only stories published today (local date)
+USE_CORE_TERMS = False
 CORE_TERMS = [              # title MUST contain at least one of these
     "admission", "hsc", "ssc", "exam", "examination", "result",
     "gpa", "merit list", "seat plan", "question leak", "syllabus",
@@ -154,10 +156,14 @@ def thash(title):
     return hashlib.md5(title.lower().encode("utf-8")).hexdigest()
 
 def blocked(title):
+    if not USE_BLOCKLIST:
+        return False
     t = title.lower()
     return any(b in t for b in BLOCKLIST)
 
 def relevant(title):
+    if not USE_CORE_TERMS:
+        return True
     t = title.lower()
     return any(term in t for term in CORE_TERMS)
 

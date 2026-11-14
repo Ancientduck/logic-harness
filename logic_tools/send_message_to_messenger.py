@@ -33,17 +33,27 @@ LOCK_PORT = 9301
 CHROMEDRIVER_PATH = r""
 BRAVE_PATH = os.path.expandvars(r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe")
 
-SIGNATURE = "-LOGIC, Apurbo's AI companion"
+# Load user name dynamically from root .env
+_env_path = Path(__file__).resolve().parent.parent / ".env"
+_raw_user = ""
+if _env_path.exists():
+    from dotenv import load_dotenv
+    load_dotenv(_env_path)
+    _raw_user = os.getenv("USER_NAME", "")
+_clean_user = re.sub(r"\s*\([^)]*\)", "", _raw_user).strip() or "User"
+SIGNATURE = f"-LOGIC, {_clean_user}'s AI companion"
 
 # --- HEADLESS MODE ---
 # True  = run invisible, send, then auto-close the automation browser.
 # False = visible browser for testing; stays open, never auto-closes.
-HEADLESS = False
+HEADLESS = True
+DEBUG = False
 _OWNED_DRIVER = None
 
 
 def _dbg(tag, **kw):
-    print(f"[DBG] {tag} | " + " ".join(f"{k}={v!r}" for k, v in kw.items()), flush=True)
+    if DEBUG:
+        print(f"[DBG] {tag} | " + " ".join(f"{k}={v!r}" for k, v in kw.items()), flush=True)
 
 
 # ============================================================
@@ -94,7 +104,7 @@ def _common_perf_options(options):
 
 
 def launch_new_chrome():
-    #_dbg("LAUNCH_NEW_BROWSER", headless=HEADLESS, binary=BRAVE_PATH)
+    _dbg("LAUNCH_NEW_BROWSER", headless=HEADLESS, binary=BRAVE_PATH)
     global _OWNED_DRIVER
     options = Options()
     options.add_experimental_option("prefs", {
@@ -125,7 +135,7 @@ def launch_new_chrome():
 
 
 def attach_to_existing_chrome():
-    #_dbg("ATTACH_ATTEMPT", port=DEBUG_PORT)
+    _dbg("ATTACH_ATTEMPT", port=DEBUG_PORT)
     options = Options()
     options.add_experimental_option("debuggerAddress", f"localhost:{DEBUG_PORT}")
     options = _common_perf_options(options)
@@ -140,11 +150,11 @@ def get_driver():
         try:
             d = attach_to_existing_chrome()
             _ = d.current_url
-            #_dbg("ATTACH_SUCCESS", url=d.current_url)
+            _dbg("ATTACH_SUCCESS", url=d.current_url)
             _OWNED_DRIVER = None
             return d
         except Exception as e:
-            #_dbg("ATTACH_FAILED", err=str(e))
+            _dbg("ATTACH_FAILED", err=str(e))
             print(e)
     # HEADLESS: reuse the owned browser across the whole batch
     if HEADLESS and _OWNED_DRIVER is not None:
@@ -298,7 +308,7 @@ def resolve_identifiers(input_name):
         real_search_name = real_val
         aliases = list(dict.fromkeys([input_lower, real_val.lower()]))
         mode = "nick->real"
-        #_dbg("RESOLVE_BIDIR", mode=mode, alias=aliases, search=real_search_name)
+        _dbg("RESOLVE_BIDIR", mode=mode, alias=aliases, search=real_search_name)
         return real_search_name, aliases
 
     # 2) input IS a real name -> search/click using its nickname key
@@ -307,7 +317,7 @@ def resolve_identifiers(input_name):
             real_search_name = nick
             aliases = list(dict.fromkeys([input_lower, nick.lower()]))
             mode = "real->nick"
-            #_dbg("RESOLVE_BIDIR", mode=mode, alias=aliases, search=real_search_name)
+            _dbg("RESOLVE_BIDIR", mode=mode, alias=aliases, search=real_search_name)
             return real_search_name, aliases
 
     # 3) fuzzy fallback in both directions (substring)
@@ -590,11 +600,9 @@ def try_select_from_sidebar(driver, aliases):
 #  TYPING
 # ============================================================
 def type_message(driver, textbox, text):
-    """
-    Type text into the messenger composer textbox and press Enter to send.
-    Handles newlines via Shift+Enter.
-    """
     driver.execute_script("arguments[0].focus();", textbox)
+    time.sleep(0.1)
+
     actions = ActionChains(driver)
     actions.click(textbox)
 
@@ -608,37 +616,45 @@ def type_message(driver, textbox, text):
     actions.send_keys(Keys.ENTER)
     actions.perform()
 
-    # Synchronous post-send verification and socket flush window
-    start_time = time.time()
-    while time.time() - start_time < 3.0:
-        is_empty = driver.execute_script(
-            "return (arguments[0].innerText || arguments[0].textContent || '').trim() === '';",
-            textbox
+    cleared = False
+    try:
+        cleared = WebDriverWait(driver, 2.0, poll_frequency=0.05).until(
+            lambda d: d.execute_script("return (arguments[0].innerText || arguments[0].textContent || '').trim() === '';", textbox)
         )
-        if is_empty:
-            break
-        time.sleep(0.1)
-    time.sleep(0.5)
+    except Exception:
+        cleared = False
+
+    if not cleared:
+        try:
+            textbox.send_keys(Keys.ENTER)
+            WebDriverWait(driver, 1.5, poll_frequency=0.05).until(
+                lambda d: d.execute_script("return (arguments[0].innerText || arguments[0].textContent || '').trim() === '';", textbox)
+            )
+        except Exception:
+            pass
+
+    # Ensure E2EE encrypted packet dispatches over websocket before headless kill
+    time.sleep(1.5)
 
 def send_message(name='', msg='', file_path=''):
     t0 = time.time()
-    #_dbg("ENTER", name=name, msg=msg, file=file_path)
+    _dbg("ENTER", name=name, msg=msg, file=file_path)
     real_search_name, aliases = resolve_identifiers(name)
-    #_dbg("RESOLVED", real=real_search_name, aliases=aliases)
+    _dbg("RESOLVED", real=real_search_name, aliases=aliases)
     driver = get_driver()
-    #_dbg("DRIVER_OK", url=driver.current_url)
+    _dbg("DRIVER_OK", url=driver.current_url)
 
     if not find_messenger_tab(driver):
-        #_dbg("NO_TAB", handles=len(driver.window_handles), urls=[h for h in driver.window_handles])
+        _dbg("NO_TAB", handles=len(driver.window_handles), urls=[h for h in driver.window_handles])
         driver.get("https://www.messenger.com")
-        #_dbg("NAVIGATED", url=driver.current_url)
+        _dbg("NAVIGATED", url=driver.current_url)
 
     try:
         wait = wait_for_messenger_ready(driver)
     except Exception as e:
         print(e)
-        #_dbg("READY_FAIL", err=repr(e)); return
-    #_dbg("READY_OK")
+        _dbg("READY_FAIL", err=repr(e)); return
+    _dbg("READY_OK")
 
     matched = check_current_thread(driver, aliases, real_search_name)
 
@@ -649,7 +665,7 @@ def send_message(name='', msg='', file_path=''):
             if alias in cached_urls:
                 target_url = cached_urls[alias]
                 break
-    #_dbg("CACHE", matched=matched, target_url=target_url)
+    _dbg("CACHE", matched=matched, target_url=target_url)
 
     # --- attempt 0: cached URL → TRUSTED fast path (no verification) ---
     if not matched and target_url and "/t/" in target_url:
@@ -663,7 +679,7 @@ def send_message(name='', msg='', file_path=''):
         if clicked:
             url_ok = wait_for_thread_url(driver, thread_id, timeout=6)
             composer_ok = wait_for_composer_mounted(driver, timeout=6) if url_ok else False
-            #_dbg("ATT0", thread_id=thread_id, clicked=clicked, url_ok=url_ok, composer_ok=composer_ok)
+            _dbg("ATT0", thread_id=thread_id, clicked=clicked, url_ok=url_ok, composer_ok=composer_ok)
             if url_ok and composer_ok:
                 matched = real_search_name
 
@@ -671,7 +687,7 @@ def send_message(name='', msg='', file_path=''):
     if not matched:
         prev_composer = get_composer_recipient_name(driver)
         label = try_select_from_sidebar(driver, aliases)
-        #_dbg("ATT1", label=label, prev_composer=prev_composer)
+        _dbg("ATT1", label=label, prev_composer=prev_composer)
         if label:
             matched, _ = get_current_recipient(
                 driver, aliases, real_search_name,
@@ -682,11 +698,11 @@ def send_message(name='', msg='', file_path=''):
     # --- attempt 2: cold full reload ---
     if (not matched and target_url and "/t/" in target_url
             and driver.current_url.rstrip("/") != target_url.rstrip("/")):
-        #_dbg("ATT2", target_url=target_url)
+        _dbg("ATT2", target_url=target_url)
         driver.get(target_url)
         wait = wait_for_messenger_ready(driver)
         matched, _ = get_current_recipient(driver, aliases, real_search_name, timeout=8)
-        #_dbg("ATT2_RESULT", matched=matched)
+        _dbg("ATT2_RESULT", matched=matched)
         if matched:
             learn_and_cache(driver, aliases, matched)
 
@@ -700,7 +716,7 @@ def send_message(name='', msg='', file_path=''):
             search.send_keys(Keys.CONTROL, "a")
             search.send_keys(Keys.BACKSPACE)
             search.send_keys(real_search_name)
-            #_dbg("ATT3_SEARCH_TYPED", q=real_search_name)
+            _dbg("ATT3_SEARCH_TYPED", q=real_search_name)
 
             wait_search = WebDriverWait(driver, 8, poll_frequency=0.05,
                                         ignored_exceptions=(StaleElementReferenceException,))
@@ -709,7 +725,7 @@ def send_message(name='', msg='', file_path=''):
                  "//li[@role='option' and not(contains(@aria-label, 'Search messages'))]")))
 
             label = contact.get_attribute("aria-label") or contact.text
-            #_dbg("ATT3_CONTACT", label=label)
+            _dbg("ATT3_CONTACT", label=label)
             clean = clean_display_name(label).lower()
             if clean and clean not in aliases:
                 aliases.append(clean)
@@ -723,7 +739,7 @@ def send_message(name='', msg='', file_path=''):
             matched, _ = get_current_recipient(
                 driver, aliases, real_search_name,
                 prev_composer=prev_composer, known_label=clean, timeout=8)
-            #_dbg("ATT3_RESULT", matched=matched)
+            _dbg("ATT3_RESULT", matched=matched)
             if matched:
                 learn_and_cache(driver, aliases, matched)
         except Exception as e:
@@ -735,10 +751,10 @@ def send_message(name='', msg='', file_path=''):
         return
 
     # --- type & send ---
-    #_dbg("TEXTBOX_SEARCH", matched=matched)
+    _dbg("TEXTBOX_SEARCH", matched=matched)
     textbox = wait.until(
         EC.presence_of_element_located((By.CSS_SELECTOR, "div[role='textbox']")))
-    #_dbg("TEXTBOX_OK")
+    _dbg("TEXTBOX_OK")
 
     if file_path:
         files = [file_path] if isinstance(file_path, str) else file_path
@@ -762,9 +778,9 @@ def send_message(name='', msg='', file_path=''):
     if SIGNATURE not in msg:
         msg = f"{msg}\n{SIGNATURE}" if msg else f"files sent by {SIGNATURE}"
 
-    #_dbg("TYPING", final_msg=msg)
+    _dbg("TYPING", final_msg=msg)
     type_message(driver, textbox, msg)
-    #_dbg("TYPED", elapsed=round(time.time()-t0, 2))
+    _dbg("TYPED", elapsed=round(time.time()-t0, 2))
 
     if file_path:
         # Ensure attachments clear composer and network finishes before quitting headless browser
@@ -777,8 +793,15 @@ def send_message(name='', msg='', file_path=''):
             )
         except Exception:
             pass
-        # Grace period for blob encryption & network dispatch
-        time.sleep(2.5)
+        # Dynamic wait for upload to complete
+        try:
+            WebDriverWait(driver, 5.0, poll_frequency=0.1).until(
+                lambda d: d.execute_script(
+                    "return !document.querySelector('[role=\"main\"] [aria-label*=\"Uploading\" i]');"
+                )
+            )
+        except Exception:
+            pass
 
     print(f'[SUCCESS] Message sent to {matched} in {time.time() - t0:.1f}s')
     print("==========================================\n")
@@ -823,5 +846,5 @@ if __name__ == '__main__':
                 print(f'[ERROR] Bad argument: {e}')
         else:
             send_messages([
-                ['hamim', "Logic here, messaging on Apurbo's behalf. He told me to remind you that you that HSC results are gonna come out on 31 OCT "],
+                ['Rafid', "Test msg"],
             ])
