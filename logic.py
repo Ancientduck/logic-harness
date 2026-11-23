@@ -633,7 +633,8 @@ class Base_AI():
             "dispatch": self.dispatch,
             "read_skill": self.read_skill,
             "read_credential": self.read_credential,
-            "self_reload": self.self_reload
+            "self_reload": self.self_reload,
+            "say_nothing": self.say_nothing
         }
 
         if not is_code:
@@ -675,6 +676,8 @@ class Base_AI():
         yield "Restarting LOGIC..."
         self_restart()
 
+    def say_nothing(self,args=None):
+        yield "logic remained silent"
     
     def dispatch(self, args):
         import logic_hall
@@ -721,7 +724,10 @@ class Base_AI():
             print(f"\nmemory:{name} {a}")
             try:
                 if name == "save" and len(a) >= 1:
-                    result = memory_tool("memory_save", {"text": a[0]})
+                    payload = {"text": a[0]}
+                    if len(a) >= 2 and isinstance(a[1], (list, tuple)):
+                        payload["triggers"] = list(a[1])
+                    result = memory_tool("memory_save", payload)
 
                 elif name == "find":
                     raw = memory_tool("memory_retrieve", {"prompt": a[0]})
@@ -731,6 +737,8 @@ class Base_AI():
                 elif name == "update" and len(a) >= 2:
                     target, text = a[0], a[1]
                     payload = {"text": text}
+                    if len(a) >= 3 and isinstance(a[2], (list, tuple)):
+                        payload["triggers"] = list(a[2])
                     payload["id" if str(target).isdigit() else "match"] = (
                         int(target) if str(target).isdigit() else target
                     )

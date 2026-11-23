@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from logic_memory_manager import memorymanager, _parse_flags
+
 from search_net import ask_search_net
 
 from openai import OpenAI
@@ -473,41 +473,6 @@ class Base_AI():
         skill_data = open(skill_folder,encoding="utf-8").read()
         yield from self.call_logic(f'SKILL:{skill_data}')
 
-    def memory_manager(self,args):
-        function_name,text = args[0],args[1]
-        if function_name == 'save':
-            t, f = _parse_flags(text)
-            result = memorymanager.save(t, f.get("memory_type", "semantic"),
-                        f.get("importance", 0.5), f.get("expires_days"))
-            yield from self.call(str(result))
-
-        elif function_name == 'search':
-            t, f = _parse_flags(text)
-            result = memorymanager.search(t, 5, f.get("memory_type"), f.get("min_importance"))
-            memorymanager.reset_sent()
-            yield from self.call("\n".join(result) if isinstance(result, list) else str(result))
-
-        elif function_name == 'delete':
-            yield from self.call(str(memorymanager.delete(text)))
-
-        elif function_name == 'core':
-            r = memorymanager.get_core()
-            yield from self.call("\n".join(r) if r else "No core memories.")
-
-        elif function_name == 'all':
-            yield from self.call("\n".join(memorymanager.show_all()))
-
-        elif function_name == 'stats':
-            yield from self.call("\n".join(memorymanager.stats()))
-
-        elif function_name == 'set':
-            mid, flag_str = text.split(" ", 1)
-            _, f = _parse_flags(flag_str)
-            yield from self.call(str(memorymanager.update(int(mid), f.get("importance"),
-                        f.get("memory_type"), f.get("expires_days"), f.get("never_expires", False))))
-
-        else:
-            yield from self.call("Unknown memory command: " + function_name)
             
 
     

@@ -1,0 +1,43 @@
+=== System ===
+OS: Windows 10
+Node: DaVinci-PC
+Uptime: 0:04:15
+
+=== Hardware Errors (WHEA) ===
+  No WHEA errors in last 48h. Hardware appears stable.
+
+=== Unexpected Shutdowns ===
+  No unexpected shutdowns in last 48h.
+
+=== GPU Driver ===
+Model: NVIDIA GeForce RTX 3050
+Driver: 32.0.16.1088
+Status: OK
+
+=== Display Driver Resets ===
+  No display driver resets in last 48h.
+
+=== Disk S.M.A.R.T. ===
+WDC WD10EZEX-00MFCA0: Healthy (932 GB)
+HP SSD EX900 Plus 256GB: Healthy (238 GB)
+
+=== Disk Space ===
+Drive C:\: 48.0 GB free / 237.8 GB total (79.8% used)
+Drive D:\: 120.7 GB free / 310.5 GB total (61.1% used)
+Drive E:\: 274.9 GB free / 310.5 GB total (11.5% used)
+Drive F:\: 183.1 GB free / 310.5 GB total (41.0% used)
+
+=== BSOD Minidumps ===
+  No recent BSOD minidumps found in last 48h.
+
+=== Disk Integrity (read-only) ===
+  Access Denied as you do not have sufficient privileges or
+  the disk may be locked by another process.
+  You have to invoke this utility running in elevated mode
+  and make sure the disk is unlocked.
+  Skipped: chkdsk requires admin privileges for this drive.
+
+=== Verdict ===
+No hardware or driver faults detected. System is healthy.
+
+Diagnostic complete.

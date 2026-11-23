@@ -1,21 +1,30 @@
 # =====================================================================
 #  LOGIC crash-proof installer  (pure PowerShell)
+#  - Installs LOGIC on a normal drive: the first fixed, non-USB drive that
+#    is not the Windows drive (D:, E:, ...) if one exists, otherwise under
+#    your user profile. You can type any other folder. Never System32.
 #  - First clones https://github.com/Ancientduck/logic-harness if needed
-#  - Manages system Python: exact 3.13.12 preferred, any 3.13.x accepted,
-#    other versions removed ONLY after an explicit Y/N permission prompt.
+#  - Uses its OWN private, pinned Python 3.13 (python-build-standalone,
+#    SHA-256 verified), stored inside the LOGIC folder. Any Python already
+#    on the PC (old OR brand new) is never touched, so it can never break
+#    LOGIC's dependencies.
 #  - Wheel-only installs (--only-binary=:all:), so pip can NEVER start
 #    a source build that needs a C compiler.
-#  - Private embedded Python 3.13 runtime as last-resort fallback if the
-#    system cannot provide 3.13.
-#  - Optional fully-offline mode: put .whl files in a "wheels" folder
-#    next to this installer and it installs without touching PyPI.
+#  - Prefers requirements.lock (exact pinned versions) over requirements.txt
+#  - Installs Everything + its es.exe command-line tool (same folder, on PATH)
+#  - Python packages can be installed fully offline: put .whl files in a
+#    "wheels" folder inside the LOGIC folder (Chromium/npm/winget still
+#    need internet).
 #
 #  Usage:
-#    Right-click → Run with PowerShell
+#    Right-click -> Run with PowerShell
 #    OR open PowerShell and run:  .\install.ps1
+#    OR choose the folder yourself:  .\install.ps1 -InstallDir D:\logic-harness
 # =====================================================================
 param(
-    [string]$InstallerPath = ''
+    [string]$InstallerPath = '',
+    [string]$InstallDir    = '',
+    [switch]$Elevated
 )
 
 $ErrorActionPreference = 'Stop'
@@ -27,7 +36,12 @@ $RT_VER   = '3.13.18'
 $RT_FILE  = "cpython-$RT_VER+$RT_TAG-x86_64-pc-windows-msvc-install_only.tar.gz"
 $RT_URL   = "https://github.com/astral-sh/python-build-standalone/releases/download/$RT_TAG/$($RT_FILE -replace '\+','%2B')"
 $RT_SHA   = 'EBE90CC1DCE2DD2D7AFA1F0AA9B6C269C7C0174AEABDC6A801381602B7283424'
-$RUNTIME_DIR = Join-Path $env:LOCALAPPDATA 'LOGIC\runtime'
+$RUNTIME_DIR = $null   # set once the LOGIC folder is known (<LOGIC>\.runtime)
+
+# --- Pinned es.exe (Everything command-line interface, voidtools) ----
+$ES_VER = '1.1.0.27'
+$ES_URL = "https://www.voidtools.com/ES-$ES_VER.x64.zip"
+$ES_SHA = '16058CCAA225D2B40BF2FC67ACF64FD2D928A4BA485DEF7277885D66B6DC8A6A'
 
 # ----------------------------------------------------------------------
 # Helper functions
@@ -69,11 +83,11 @@ function Test-FileSha256([string]$Path, [string]$ExpectedUpper) {
     return ($h -eq $ExpectedUpper)
 }
 
-function Invoke-Download([string]$Url, [string]$Dest) {
+function Invoke-Download([string]$Url, [string]$Dest, [string]$Label = 'embedded Python') {
     # Tries curl.exe (ships with Win10+) then Invoke-WebRequest, 3 rounds.
     for ($i = 1; $i -le 3; $i++) {
         try {
-            Write-Host "Downloading embedded Python (attempt $i/3)..." -ForegroundColor Gray
+            Write-Host "Downloading $Label (attempt $i/3)..." -ForegroundColor Gray
             $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
             if ($curl) {
                 & $curl.Source -L --fail --retry 2 --connect-timeout 20 -o $Dest $Url
@@ -106,7 +120,7 @@ function Get-EmbeddedPython {
     $tmp = Join-Path $env:TEMP $RT_FILE
     Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
     if (-not (Invoke-Download -Url $RT_URL -Dest $tmp)) {
-        throw "Could not download the embedded Python runtime. Check the internet connection, or install Python 3.13 manually and rerun."
+        throw "Could not download the private Python runtime. Check the internet connection (github.com must be reachable) and rerun."
     }
     if (-not (Test-FileSha256 -Path $tmp -ExpectedUpper $RT_SHA)) {
         $actual = (Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash
@@ -117,7 +131,7 @@ function Get-EmbeddedPython {
 
     # 3) Extract with tar.exe (built into Windows 10 1803+)
     $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
-    if (-not $tar) { throw 'tar.exe not found. Update Windows 10 (1803+) and rerun, or install Python 3.13 manually.' }
+    if (-not $tar) { throw 'tar.exe not found. Update Windows 10 (1803+) and rerun.' }
     $extractRoot = Join-Path $env:TEMP ("logic-rt-" + [System.Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $extractRoot -Force | Out-Null
     & $tar.Source -xzf $tmp -C $extractRoot
@@ -158,125 +172,95 @@ function Refresh-Path {
     }
 }
 
-function Read-YesNo([string]$Message) {
-    # Y or ENTER = continue, N = abort. Anything else re-asks.
-    while ($true) {
-        $answer = Read-Host "$Message (Y = yes / ENTER = yes, N = no)"
-        if ($answer -eq '' -or $answer -match '^[yY](es)?$') { return $true }
-        if ($answer -match '^[nN]o?$') { return $false }
-        Write-Host 'Please answer Y (or press ENTER) to continue, or N to cancel.' -ForegroundColor Yellow
+function Exit-Installer([int]$Code) {
+    # In an elevated window that would vanish on exit, wait so errors can be read.
+    if ($Elevated) {
+        Write-Host ''
+        Read-Host 'Press ENTER to close this window' | Out-Null
     }
+    exit $Code
 }
 
-function Get-InstalledPythons {
-    # Detects every installed CPython via the registry (per-machine + per-user,
-    # incl. the WOW6432Node view). Returns @{ Exe; Version } entries.
-    $found = @()
-    $roots = @(
-        'HKLM:\SOFTWARE\Python\PythonCore',
-        'HKLM:\SOFTWARE\WOW6432Node\Python\PythonCore',
-        'HKCU:\SOFTWARE\Python\PythonCore'
-    )
-    foreach ($root in $roots) {
-        if (-not (Test-Path $root)) { continue }
-        foreach ($key in (Get-ChildItem $root -ErrorAction SilentlyContinue)) {
+function Test-UnsafeDir([string]$Dir) {
+    # True for empty/invalid paths and anything inside the Windows folder (System32 etc.).
+    if (-not $Dir) { return $true }
+    try { $full = [System.IO.Path]::GetFullPath($Dir).TrimEnd('\') } catch { return $true }
+    $win = $env:windir.TrimEnd('\')
+    return ($full -ieq $win) -or $full.StartsWith($win + '\', [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-DefaultInstallRoot {
+    # First fixed, non-USB drive that is NOT the Windows drive and has >= 3 GB free
+    # (alphabetical: D: before E:). Falls back to a folder in the user profile.
+    $sys = $env:SystemDrive
+    try {
+        $disks = @(Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType=3' -ErrorAction Stop |
+            Where-Object { $_.DeviceID -ne $sys -and $_.FreeSpace -ge 3GB } |
+            Sort-Object DeviceID)
+        foreach ($d in $disks) {
+            $isUsb = $false
             try {
-                $ipKey = "$($key.PSPath)\InstallPath"
-                if (-not (Test-Path $ipKey)) { continue }
-                $props = Get-ItemProperty $ipKey -ErrorAction SilentlyContinue
-                $exe = $props.ExecutablePath
-                if (-not $exe -and $props.'(default)') { $exe = Join-Path $props.'(default)' 'python.exe' }
-                if ($exe -and (Test-Path $exe)) {
-                    $v = Get-PyVer -Exe $exe
-                    if ($v) { $found += @{ Exe = $exe; Version = $v } }
-                }
+                $bus = (Get-Partition -DriveLetter $d.DeviceID.Substring(0, 1) -ErrorAction Stop |
+                        Get-Disk -ErrorAction Stop).BusType
+                if ("$bus" -eq 'USB') { $isUsb = $true }
             } catch { }
+            if (-not $isUsb) { return (Join-Path ($d.DeviceID + '\') 'logic-harness') }
         }
-    }
-    $seen = @{}
-    foreach ($item in $found) {
-        $k = $item.Exe.ToLower()
-        if (-not $seen.ContainsKey($k)) { $seen[$k] = $item }
-    }
-    return @($seen.Values)
+    } catch { }
+    return (Join-Path $env:LOCALAPPDATA 'logic-harness')
 }
 
-function Uninstall-PythonVersion([string]$Exe, [string]$Version) {
-    # Best effort, silent removal. Tries: winget -> MSI/exe uninstall entry
-    # from the registry -> Microsoft Store appx. Reports if it could not.
-    $majmin = ($Version -split '\.')[0..1] -join '.'
-    Write-Host "Uninstalling Python $Version ..."
-    if ($Exe -like '*WindowsApps*') {
-        try {
-            Get-AppxPackage *PythonSoftwareFoundation* |
-                Where-Object { $_.Name -like "*Python.$majmin*" } |
-                Remove-AppxPackage -ErrorAction SilentlyContinue
-        } catch { }
-    }
-    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
-    if ($winget) {
-        try {
-            & $winget.Source uninstall --id "Python.Python.$majmin" --exact --silent --disable-interactivity 2>$null
-            if ($LASTEXITCODE -eq 0) { Write-Host "winget removed Python $majmin." -ForegroundColor Green }
-        } catch { }
-    }
-    if (Test-Path -LiteralPath $Exe -PathType Leaf) {
-        # Still present -> find its own uninstaller in the registry.
-        $uninstRoots = @(
-            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
-            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall',
-            'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'
-        )
-        foreach ($root in $uninstRoots) {
-            if (-not (Test-Path $root)) { continue }
-            foreach ($k in (Get-ChildItem $root -ErrorAction SilentlyContinue)) {
-                try {
-                    $p = Get-ItemProperty $k.PSPath -ErrorAction SilentlyContinue
-                    if (-not $p.DisplayName) { continue }
-                    if ($p.DisplayName -notmatch "^Python $majmin(\.|\s|$)") { continue }
-                    $cmd = $null
-                    if ($p.QuietUninstallString) { $cmd = $p.QuietUninstallString }
-                    elseif ($p.UninstallString) {
-                        $cmd = $p.UninstallString
-                        if ($cmd -match 'MsiExec\.exe.*\/I\{') { $cmd = ($cmd -replace '/I\{', '/X{') + ' /qn /norestart' }
-                    }
-                    if ($cmd) {
-                        Write-Host "Running uninstaller for '$($p.DisplayName)'..."
-                        Start-Process -FilePath 'cmd.exe' -ArgumentList "/c $cmd" -Wait -WindowStyle Hidden
-                    }
-                } catch { }
+function Resolve-InstallRoot([string]$Requested) {
+    # Returns an existing, writable folder that is not under C:\Windows.
+    # With -InstallDir the choice is final; otherwise the user may accept the default or type another.
+    $default     = Get-DefaultInstallRoot
+    $interactive = -not $Requested
+    $pick        = if ($Requested) { $Requested } else { $default }
+    while ($true) {
+        if ($interactive) {
+            Write-Host ''
+            Write-Host "LOGIC will be installed in this folder: $pick" -ForegroundColor Cyan
+            $ans = (Read-Host 'Press ENTER to accept, or type a different folder (for example D:\logic-harness)').Trim().Trim('"')
+            if ($ans) { $pick = $ans }
+        }
+        $problem = $null
+        $full    = $null
+        try { $full = [System.IO.Path]::GetFullPath($pick) } catch { $problem = "'$pick' is not a valid folder path." }
+        if (-not $problem) {
+            if ($full -notmatch '^[A-Za-z]:\\') { $problem = 'Please use a full path that starts with a drive letter, for example D:\logic-harness.' }
+            elseif (-not (Test-Path -LiteralPath $full.Substring(0, 3))) { $problem = "Drive $($full.Substring(0, 2)) does not exist on this PC." }
+            elseif (Test-UnsafeDir $full) { $problem = 'Please choose a folder outside the Windows directory (not System32).' }
+            else {
+                try { New-Item -ItemType Directory -Path $full -Force -ErrorAction Stop | Out-Null }
+                catch { $problem = "Cannot create '$full': $($_.Exception.Message)" }
             }
         }
+        if (-not $problem) { return $full }
+        if (-not $interactive) { throw $problem }
+        Write-Host $problem -ForegroundColor Yellow
+        $pick = $default
     }
-    Start-Sleep -Seconds 1
-    if (Test-Path -LiteralPath $Exe -PathType Leaf) {
-        Write-Host "WARNING: Python $Version at $Exe could not be fully removed. It will be left in place; LOGIC will not use it." -ForegroundColor Yellow
-    } else {
-        Write-Host "Python $Version removed." -ForegroundColor Green
-    }
-}
-
-function Install-TargetPython {
-    # Installs Python 3.13.12 via winget (pinned). Returns $true on success.
-    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
-    if ($winget) {
-        Write-Host 'Installing Python 3.13.12 using winget...'
-        & $winget.Source install --id Python.Python.3.13 --exact --version 3.13.12 --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host 'Pinned 3.13.12 not available in winget - trying latest 3.13 instead...' -ForegroundColor Yellow
-            & $winget.Source install --id Python.Python.3.13 --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
-        }
-        Refresh-Path
-        return $true
-    }
-    return $false
 }
 
 function Invoke-PipInstall([string]$PythonExe, [string[]]$PyPrefix, [string]$ReqFile) {
     $wheelsDir = Join-Path $scriptDir 'wheels'
     $hasWheels = (Test-Path $wheelsDir) -and (@(Get-ChildItem -LiteralPath $wheelsDir -Filter *.whl -ErrorAction SilentlyContinue).Count -gt 0)
-    & $PythonExe @PyPrefix -m pip install --upgrade pip
-    if ($LASTEXITCODE -ne 0) { throw 'Could not upgrade pip.' }
+
+    # Upgrading pip needs PyPI, so skip it in offline mode; a failure is not fatal.
+    if (-not $hasWheels) {
+        & $PythonExe @PyPrefix -m pip install --upgrade pip
+        if ($LASTEXITCODE -ne 0) { Write-Host 'Could not upgrade pip - continuing with the version bundled in the runtime.' -ForegroundColor Yellow }
+    }
+
+    # Warn when the dependency list is not pinned (pinned = identical installs on every PC).
+    $unpinned = @(Get-Content -LiteralPath $ReqFile |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_ -and -not $_.StartsWith('#') -and -not $_.StartsWith('-') -and $_ -notmatch '==' })
+    if ($unpinned.Count -gt 0) {
+        Write-Host "Note: $($unpinned.Count) package(s) in $(Split-Path -Leaf $ReqFile) are not pinned to an exact version, so pip may install newer releases than the ones LOGIC was tested with." -ForegroundColor Yellow
+        Write-Host 'To make every install identical, run this on your working PC and commit the file:  python -m pip freeze > requirements.lock' -ForegroundColor Yellow
+    }
+
     if ($hasWheels) {
         Write-Host "Offline mode: installing wheels from $wheelsDir (PyPI will NOT be contacted)." -ForegroundColor Green
         & $PythonExe @PyPrefix -m pip install --no-index --find-links "$wheelsDir" --only-binary=:all: -r $ReqFile
@@ -327,20 +311,25 @@ try {
         Write-Host 'Detected remote install (irm | iex). Will use current directory.' -ForegroundColor Yellow
     }
 
-    # Elevate if needed.
-    # For remote runs we re-launch by re-downloading the script instead of -File.
+    # Elevate if needed. The relaunch uses the SAME PowerShell host (Windows PowerShell or
+    # PowerShell 7), and -Elevated makes the new window wait for ENTER before it closes.
     if (-not (Test-IsAdmin)) {
         Write-Host 'Requesting administrator privileges through Windows UAC...' -ForegroundColor Yellow
+        $hostExe = (Get-Process -Id $PID).Path
+        if (-not $hostExe -or -not (Test-Path -LiteralPath $hostExe)) { $hostExe = "$PSHOME\powershell.exe" }
 
         if ($isRemote) {
-            # Re-run the same remote one-liner elevated
-            $elevCmd = "irm 'https://raw.githubusercontent.com/Ancientduck/logic-harness/main/install.ps1' | iex"
+            $url   = 'https://raw.githubusercontent.com/Ancientduck/logic-harness/main/install.ps1'
+            $extra = ''
+            if ($InstallDir) { $extra = " -InstallDir '$InstallDir'" }
+            $elevCmd  = "& ([scriptblock]::Create((irm '$url'))) -Elevated$extra"
             $elevArgs = "-NoProfile -ExecutionPolicy Bypass -Command `"$elevCmd`""
         } else {
-            $elevArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -InstallerPath `"$scriptPath`""
+            $elevArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -InstallerPath `"$scriptPath`" -Elevated"
+            if ($InstallDir) { $elevArgs += " -InstallDir `"$InstallDir`"" }
         }
 
-        $child = Start-Process -FilePath "$PSHOME\powershell.exe" -ArgumentList $elevArgs -Verb RunAs -Wait -PassThru
+        $child = Start-Process -FilePath $hostExe -ArgumentList $elevArgs -Verb RunAs -Wait -PassThru
         $code = $child.ExitCode
         if ($null -eq $code) {
             Write-Host 'Elevated process ended without reporting an exit code - treating as failure.' -ForegroundColor Red
@@ -354,68 +343,77 @@ try {
     # ---------------------------------------------------------------
     # 0/8 Ensure the logic-harness repo is present
     # ---------------------------------------------------------------
-    Write-Section '0/8 Clone logic-harness repository (if needed)'
+    Write-Section '0/8 Choose install location and get the logic-harness repository'
 
     $REPO_URL  = 'https://github.com/Ancientduck/logic-harness.git'
     $REPO_NAME = 'logic-harness'
 
-    # Decide base directory for the clone
-    if ($isRemote) {
-        # irm | iex → use the current working directory of the PowerShell session
-        $startDir = (Get-Location).Path
-        Write-Host "Remote mode → installing into current directory: $startDir" -ForegroundColor Cyan
-    } else {
-        $startDir = Split-Path -Parent $scriptPath
-    }
-
     function Test-LogicRoot([string]$Dir) {
+        if (-not $Dir) { return $false }
         return (Test-Path (Join-Path $Dir 'requirements.txt')) -and
                (Test-Path (Join-Path $Dir 'logic_tui.py'))
     }
 
-    # Prefer an already-valid LOGIC folder if one exists nearby
-    $candidates = @(
-        $startDir,
-        (Join-Path $startDir $REPO_NAME),
-        (Join-Path (Get-Location).Path $REPO_NAME)
-    )
-
     $scriptDir = $null
-    foreach ($c in $candidates) {
-        if ($c -and (Test-LogicRoot $c)) {
-            $scriptDir = $c
-            Write-Host "Found existing LOGIC harness at: $scriptDir" -ForegroundColor Green
-            break
+
+    # Reuse a LOGIC checkout the installer sits in (or next to) - never one under C:\Windows.
+    if (-not $isRemote) {
+        $here = Split-Path -Parent $scriptPath
+        foreach ($c in @($here, (Join-Path $here $REPO_NAME))) {
+            if ((Test-LogicRoot $c) -and -not (Test-UnsafeDir $c)) {
+                $scriptDir = $c
+                Write-Host "Found existing LOGIC harness at: $scriptDir" -ForegroundColor Green
+                break
+            }
         }
     }
 
     if (-not $scriptDir) {
-        # Need to clone. First make sure git is available.
-        $git = Get-Command git.exe -ErrorAction SilentlyContinue
-        if (-not $git) {
-            Write-Host 'Git not found – installing Git for Windows via winget...' -ForegroundColor Yellow
-            Invoke-WingetInstall -Id 'Git.Git' -Name 'Git'
-            Refresh-Path
+        # Pick a normal drive (D:, E:, ...) or whatever the user types - never System32, whatever the working directory is.
+        $installRoot = Resolve-InstallRoot -Requested $InstallDir
+        Write-Host "LOGIC folder: $installRoot" -ForegroundColor Cyan
+        $cloneTarget = $installRoot   # the chosen folder IS the repo folder
+
+        if (Test-LogicRoot $cloneTarget) {
+            $scriptDir = $cloneTarget
+            Write-Host "Found existing LOGIC harness at: $scriptDir" -ForegroundColor Green
+        } else {
+            # Need to clone. First make sure git is available.
             $git = Get-Command git.exe -ErrorAction SilentlyContinue
             if (-not $git) {
-                throw 'Git is still unavailable after installation. Install it manually from https://git-scm.com and rerun.'
+                Write-Host 'Git not found - installing Git for Windows via winget...' -ForegroundColor Yellow
+                Invoke-WingetInstall -Id 'Git.Git' -Name 'Git'
+                Refresh-Path
+                $git = Get-Command git.exe -ErrorAction SilentlyContinue
+                if (-not $git) {
+                    throw 'Git is still unavailable after installation. Install it manually from https://git-scm.com and rerun.'
+                }
             }
-        }
 
-        $cloneTarget = Join-Path $startDir $REPO_NAME
-        if (Test-Path $cloneTarget) {
-            Write-Host "Removing incomplete folder: $cloneTarget" -ForegroundColor Yellow
-            Remove-Item -LiteralPath $cloneTarget -Recurse -Force -ErrorAction SilentlyContinue
-        }
+            if (Test-Path -LiteralPath $cloneTarget) {
+                $items = @(Get-ChildItem -LiteralPath $cloneTarget -Force -ErrorAction SilentlyContinue)
+                if ($items.Count -gt 0) {
+                    if (Test-Path -LiteralPath (Join-Path $cloneTarget '.git')) {
+                        Write-Host "Removing incomplete earlier clone: $cloneTarget" -ForegroundColor Yellow
+                        Remove-Item -LiteralPath $cloneTarget -Recurse -Force -ErrorAction SilentlyContinue
+                    } else {
+                        throw "The folder '$cloneTarget' already exists and does not look like LOGIC. Delete it or choose another install folder, then rerun."
+                    }
+                }
+            }
 
-        Write-Host "Cloning $REPO_URL → $cloneTarget ..." -ForegroundColor Cyan
-        & $git.Source clone --depth 1 $REPO_URL $cloneTarget
-        if ($LASTEXITCODE -ne 0) {
-            throw "git clone failed. Check your internet connection and try again."
+            Write-Host "Cloning $REPO_URL -> $cloneTarget ..." -ForegroundColor Cyan
+            & $git.Source clone --depth 1 $REPO_URL $cloneTarget
+            if ($LASTEXITCODE -ne 0) {
+                throw "git clone failed. Check your internet connection and try again."
+            }
+            $scriptDir = $cloneTarget
+            Write-Host "Repository cloned successfully." -ForegroundColor Green
         }
-        $scriptDir = $cloneTarget
-        Write-Host "Repository cloned successfully." -ForegroundColor Green
     }
+
+    # The private Python runtime lives inside the LOGIC folder (same drive as LOGIC).
+    $RUNTIME_DIR = Join-Path $scriptDir '.runtime'
 
     $requirements  = Join-Path $scriptDir 'requirements.txt'
     $dashboard     = Join-Path $scriptDir 'setup_dashboard.html'
@@ -430,68 +428,26 @@ try {
 
     Write-Host "LOGIC folder: $scriptDir"
 
-    # ---------------------------------------------------------------
-    Write-Section '1/8 Python 3.13.12 (system check + managed install)'
-    $targetVersion = '3.13.12'
-    $appPython   = $null   # path to python.exe used for everything below
-    $appPyPrefix = @()     # extra launcher args (unused since we call the exe directly)
-    $useVenv     = $true   # host Python is always wrapped in a private venv
-    Refresh-Path
-
-    $pythons = Get-InstalledPythons
-    # Policy: exact 3.13.12 first; ANY other 3.13.x is also accepted silently
-    # (identical cp313 wheel ABI). Only versions OUTSIDE the 3.13 family
-    # (3.9/3.12/3.14/...) require the user's permission before removal.
-    $match = @($pythons | Where-Object { $_.Version -eq $targetVersion }) | Select-Object -First 1
-    if (-not $match) { $match = @($pythons | Where-Object { $_.Version -like '3.13.*' }) | Select-Object -First 1 }
-
-    if (-not $match) {
-        if (@($pythons).Count -gt 0) {
-            Write-Host "LOGIC requires Python 3.13 (built on $targetVersion). Found incompatible Python on this PC:" -ForegroundColor Yellow
-            foreach ($p in $pythons) { Write-Host "  - Python $($p.Version)  ($($p.Exe))" }
-            Write-Host ''
-            Write-Host "With your permission these will be REMOVED and replaced by Python" -ForegroundColor Yellow
-            Write-Host "$targetVersion. Removal does NOT require a restart, but any other" -ForegroundColor Yellow
-            Write-Host 'software depending on them may stop working.' -ForegroundColor Yellow
-            Write-Host ''
-            $ok = Read-YesNo "May LOGIC remove the Python version(s) above and install Python $targetVersion instead?"
-            if (-not $ok) {
-                Write-Host ''
-                Write-Host 'Permission denied by user. Nothing was installed or removed.' -ForegroundColor Red
-                exit 1
-            }
-            foreach ($p in $pythons) { Uninstall-PythonVersion -Exe $p.Exe -Version $p.Version }
-        }
-        Write-Host "Installing Python $targetVersion..."
-        Install-TargetPython
-
-        Refresh-Path
-        $pythons = Get-InstalledPythons
-        $match = @($pythons | Where-Object { $_.Version -eq $targetVersion }) | Select-Object -First 1
-        if (-not $match) {
-            $match = @($pythons | Where-Object { $_.Version -like '3.13.*' }) | Select-Object -First 1
-            if ($match) {
-                Write-Host "Exact $targetVersion unavailable; using Python $($match.Version) (same 3.13 wheel compatibility)." -ForegroundColor Yellow
-            }
-        }
-        if (-not $match) {
-            Write-Host "Could not install system Python $targetVersion - falling back to a private LOGIC runtime." -ForegroundColor Yellow
-            try {
-                $appPython = Get-EmbeddedPython
-                $useVenv   = $false   # runtime is already private to LOGIC
-            } catch {
-                throw "Could not obtain Python $targetVersion (winget failed: $($_.Exception.Message)). Install Python 3.13.12 manually from https://www.python.org/downloads/ and rerun this installer."
-            }
-        }
+    # Exact pinned versions (requirements.lock) win over the loose requirements.txt.
+    $lockFile = Join-Path $scriptDir 'requirements.lock'
+    if (Test-Path -LiteralPath $lockFile -PathType Leaf) {
+        $requirements = $lockFile
+        Write-Host 'Using pinned dependency list: requirements.lock' -ForegroundColor Green
     }
 
-    if ($match) { $appPython = $match.Exe }
+    # ---------------------------------------------------------------
+    Write-Section '1/8 Private Python 3.13 runtime (pinned, independent of the system)'
+    Write-Host 'LOGIC uses its own pinned Python so its libraries always match. Python versions already on this PC are left alone.' -ForegroundColor Gray
+    Refresh-Path
+    $appPython   = Get-EmbeddedPython
+    $appPyPrefix = @()
+
     $v = Get-PyVer -Exe $appPython -Prefix $appPyPrefix
     if (-not $v) { throw "Python at '$appPython' did not respond to a version check." }
     if (-not $v.StartsWith('3.13')) {
-        throw "Refusing to continue: '$appPython' is Python $v. LOGIC requires 3.13.x (built on 3.13.12)."
+        throw "Refusing to continue: '$appPython' is Python $v. LOGIC requires 3.13.x."
     }
-    Write-Host "Using Python $v - PATH refreshed for this session, no restart needed." -ForegroundColor Green
+    Write-Host "Using private Python $v" -ForegroundColor Green
 
     # ---------------------------------------------------------------
     Write-Section '2/8 Node.js LTS and npm'
@@ -506,16 +462,6 @@ try {
 
     # ---------------------------------------------------------------
     Write-Section '3/8 Python dependencies (wheel-only, compiler-free)'
-    if ($useVenv) {
-        $venv = Join-Path $scriptDir '.venv'
-        $venvPython = Join-Path $venv 'Scripts\python.exe'
-        if (-not (Test-Path $venvPython)) {
-            & $appPython @appPyPrefix -m venv $venv
-            if ($LASTEXITCODE -ne 0) { throw 'Could not create the Python virtual environment.' }
-        }
-        $appPython   = $venvPython
-        $appPyPrefix = @()
-    }
     Invoke-PipInstall -PythonExe $appPython -PyPrefix $appPyPrefix -ReqFile $requirements
 
     & $appPython @appPyPrefix -m playwright install chromium
@@ -554,49 +500,49 @@ try {
     }
 
     # ---------------------------------------------------------------
-    Write-Section '6/8 Configure Everything HTTP server'
-    # The HTTP server can expose filenames/search results to devices on the
-    # network. Enable it only because the original LOGIC setup requires it.
-    # Do not forward its port on your router or expose it to the public internet.
-    function Set-IniValue([string]$Content, [string]$Key, [string]$Value) {
-        $pattern = '(?im)^\s*' + [regex]::Escape($Key) + '\s*=.*$'
-        if ([regex]::IsMatch($Content, $pattern)) {
-            return [regex]::Replace($Content, $pattern, "$Key=$Value")
-        }
-        if ($Content -notmatch '(?im)^\s*\[Everything\]\s*$') {
-            $Content = $Content.TrimEnd() + "`r`n`r`n[Everything]`r`n"
-        }
-        $section = [regex]::Match($Content, '(?im)^\s*\[Everything\]\s*$')
-        if (-not $section.Success) { return $Content.TrimEnd() + "`r`n$Key=$Value`r`n" }
-        $nextSection = [regex]::Match($Content.Substring($section.Index + $section.Length), '(?im)^\s*\[.+\]\s*$')
-        if ($nextSection.Success) {
-            $insertAt = $section.Index + $section.Length + $nextSection.Index
-            return $Content.Insert($insertAt, "$Key=$Value`r`n")
-        }
-        return $Content.TrimEnd() + "`r`n$Key=$Value`r`n"
-    }
-    $appdataFolder = Join-Path $env:APPDATA 'Everything'
-    $appdataIni = Join-Path $appdataFolder 'Everything.ini'
-    $installIni = Join-Path (Split-Path -Parent $everythingExe) 'Everything.ini'
-    $ini = $null
-    if (Test-Path $appdataIni) { $ini = $appdataIni }
-    elseif (Test-Path $installIni) { $ini = $installIni }
-    else {
-        New-Item -ItemType Directory -Path $appdataFolder -Force | Out-Null
-        $ini = $appdataIni
-        [System.IO.File]::WriteAllText($ini, "[Everything]`r`n", [System.Text.Encoding]::UTF8)
-    }
-    $content = Get-Content -LiteralPath $ini -Raw
-    if ($null -eq $content) { $content = '' }
-    $content = Set-IniValue -Content $content -Key 'allow_http_server' -Value '1'
-    $content = Set-IniValue -Content $content -Key 'http_server_port' -Value '80'
-    [System.IO.File]::WriteAllText($ini, $content, [System.Text.Encoding]::UTF8)
-    Write-Host "Configured Everything HTTP settings in: $ini" -ForegroundColor Green
+    Write-Section '6/8 Install es.exe (Everything command-line tool)'
+    $everythingDir = Split-Path -Parent $everythingExe
+    $esExe = Join-Path $everythingDir 'es.exe'
 
-    Stop-Process -Name 'Everything' -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Milliseconds 700
-    Start-Process -FilePath $everythingExe
-    Write-Host 'Everything restarted. Confirm its HTTP server is enabled in Everything options if your version stores settings elsewhere.' -ForegroundColor Yellow
+    if (Test-Path -LiteralPath $esExe -PathType Leaf) {
+        Write-Host "es.exe already present: $esExe" -ForegroundColor Green
+    } else {
+        $esZip = Join-Path $env:TEMP "ES-$ES_VER.x64.zip"
+        Remove-Item -LiteralPath $esZip -Force -ErrorAction SilentlyContinue
+        if (-not (Invoke-Download -Url $ES_URL -Dest $esZip -Label "es.exe $ES_VER")) {
+            throw "Could not download es.exe from $ES_URL. Check the internet connection, or download ES from https://www.voidtools.com/downloads and put es.exe in $everythingDir, then rerun."
+        }
+        if (-not (Test-FileSha256 -Path $esZip -ExpectedUpper $ES_SHA)) {
+            $actual = (Get-FileHash -LiteralPath $esZip -Algorithm SHA256).Hash
+            Remove-Item -LiteralPath $esZip -Force -ErrorAction SilentlyContinue
+            throw "es.exe download failed the SHA-256 check (got $actual). The file was corrupted or tampered with - rerun the installer."
+        }
+        Write-Host 'Checksum OK.' -ForegroundColor Green
+
+        $esExtract = Join-Path $env:TEMP ('logic-es-' + [System.Guid]::NewGuid().ToString('N'))
+        Expand-Archive -LiteralPath $esZip -DestinationPath $esExtract -Force
+        $esFound = Get-ChildItem -LiteralPath $esExtract -Filter 'es.exe' -Recurse -File | Select-Object -First 1
+        if (-not $esFound) { throw 'es.exe was not found inside the downloaded archive.' }
+        Copy-Item -LiteralPath $esFound.FullName -Destination $esExe -Force
+        Remove-Item -LiteralPath $esExtract -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $esZip -Force -ErrorAction SilentlyContinue
+        Write-Host "es.exe installed: $esExe" -ForegroundColor Green
+    }
+    if (-not (Test-Path -LiteralPath $esExe -PathType Leaf)) { throw "es.exe is missing after installation: $esExe" }
+
+    # Put the Everything folder (now containing es.exe) on PATH - persistent and this session.
+    Add-UserPath $everythingDir
+    Refresh-Path
+    if (-not (Get-Command es.exe -ErrorAction SilentlyContinue)) {
+        Write-Host 'es.exe is installed but not yet visible in this session. Open a new terminal after setup.' -ForegroundColor Yellow
+    }
+
+    # es.exe talks to the running Everything app, so make sure it is running (background/tray).
+    if (-not (Get-Process -Name 'Everything' -ErrorAction SilentlyContinue)) {
+        Start-Process -FilePath $everythingExe -ArgumentList '-startup'
+        Start-Sleep -Seconds 3
+        Write-Host 'Everything started in the background.' -ForegroundColor Green
+    }
 
     # ---------------------------------------------------------------
     Write-Section '7/8 Install the logic command'
@@ -619,18 +565,16 @@ try {
     Write-Host "Python runtime: $appPython"
     Write-Host "Launcher: $shim"
     Write-Host 'Open a NEW Command Prompt or PowerShell window after setup.'
+    Write-Host "LOGIC folder: $scriptDir"
     Write-Host 'Run: 9router'
     Write-Host 'Then open http://localhost:20128 and finish the provider/model/API-token setup.'
     Write-Host 'Finally run: logic'
-    Write-Host ''
-    Write-Host 'Security note: Everything HTTP on port 80 is not intended for public internet exposure.' -ForegroundColor Yellow
-    exit 0
+    Exit-Installer 0
 }
 catch {
     Write-Host ''
     Write-Host "[ERROR] $($_.Exception.Message)" -ForegroundColor Red
     Write-Host ''
-    Write-Host 'The installer made no partial changes it cannot recover from - simply fix' -ForegroundColor Yellow
-    Write-Host 'the issue above (internet, disk space, antivirus) and run it again.' -ForegroundColor Yellow
-    exit 1
+    Write-Host 'Fix the issue above (internet, disk space, antivirus) and run the installer again - it is safe to re-run.' -ForegroundColor Yellow
+    Exit-Installer 1
 }

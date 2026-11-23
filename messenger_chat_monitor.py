@@ -1,10 +1,13 @@
 import datetime
 import os
 from pathlib import Path
+import re
+
 _env_path = Path(__file__).resolve().parent / ".env"
 if _env_path.exists():
     from dotenv import load_dotenv
     load_dotenv(_env_path)
+    
 _RAW_USER = os.getenv("USER_NAME", "Apurbo")
 USER_CLEAN_NAME = re.sub(r"\s*\([^)]*\)", "", _RAW_USER).strip() or "Apurbo"
 

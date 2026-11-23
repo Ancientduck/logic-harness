@@ -209,8 +209,6 @@ class SmartInput(Input):
         self.cursor_position = start
 # ──────────────────────────── end INPUT UPGRADES ────────────────────────────
 
-
-
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 # Set True to connect to logic.py backend; False for demo
@@ -1693,7 +1691,6 @@ FS = {
         "core": {
             "logic.py": "18 KB",
             "logic_hall.py": "9 KB",
-            "logic_memory_manager.py": "6 KB",
         },
         "tools": {
             "find_file.py": "2 KB",
@@ -2734,34 +2731,6 @@ class StatusSpinner(Widget):
 class MemoryPanel(Vertical):
     def compose(self) -> ComposeResult:
         yield RichLog(id="memory-log", wrap=True, max_lines=500, markup=False)
-
-    def refresh_memories(self) -> None:
-        log = self.query_one("#memory-log", RichLog)
-        log.clear()
-
-        if USE_REAL:
-            try:
-                from logic_memory_manager import memorymanager
-
-                all_mem = memorymanager.show_all()
-                for line in all_mem:
-                    log.write(Text(str(line), style="#a3a3a3"))
-                if not all_mem:
-                    log.write(Text("No stored memories retrieved.", style="italic #737373"))
-            except Exception as e:
-                log.write(Text(f"Memory access error: {e}", style="bold #ff5555"))
-        else:
-            for mem in logic_ai.get_memories():
-                filled = int(mem["importance"] * 10)
-                bar = "=" * filled + "-" * (10 - filled)
-                p = Panel(
-                    Text(mem["text"], style="bold #e5e5e5"),
-                    title=f"[bold #e5e5e5]#{mem['id']} {mem['type'].upper()}[/] [{bar}]",
-                    border_style="#333333",
-                    box=box.ROUNDED,
-                    padding=(0, 1),
-                )
-                log.write(p)
 
 
 class ToolPanel(Vertical):

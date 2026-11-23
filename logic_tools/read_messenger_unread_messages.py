@@ -1,4 +1,6 @@
 
+#def log_debug(msg):
+
 from pathlib import Path
 import os
 import sys
@@ -11,7 +13,7 @@ from playwright.sync_api import sync_playwright
 
 # Suppress Brave DevTools/TF noise
 _stderr = sys.stderr
-sys.stderr = open(os.devnull, "w")
+# sys.stderr = open(os.devnull, "w")
 
 
 def _find_chrome():
@@ -34,7 +36,7 @@ USER_DATA_DIR = (
 )
 EXECUTABLE_PATH = _find_chrome()
 DEBUG_PORT = 9222
-HEADLESS = True
+HEADLESS = True 
 MAX_MSGS = 10
 
 DATA_DIR = str(
@@ -43,6 +45,27 @@ DATA_DIR = str(
 )
 NICKNAMES_FILE = os.path.join(DATA_DIR, "messenger_nicknames.json")
 INBOX_URLS_FILE = os.path.join(DATA_DIR, "messenger_inbox_urls.json")
+IGNORE_LIST_FILE = os.path.join(DATA_DIR, "messenger_ignore_list.json")
+
+
+def load_ignore_list():
+    try:
+        if os.path.exists(IGNORE_LIST_FILE):
+            import json
+            with open(IGNORE_LIST_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return [str(x).strip().lower() for x in data if x]
+    except Exception:
+        pass
+    return []
+
+
+def is_ignored(name, ignore_list):
+    if not name or not ignore_list:
+        return False
+    n = name.strip().lower()
+    return any(item == n or item in n or n in item for item in ignore_list)
 
 
 def load_nicknames():
@@ -196,30 +219,26 @@ def get_unread_convos(page):
     rows = page.query_selector_all("[role='row']")
     unread = []
 
-    for row in rows:
+    for idx, row in enumerate(rows):
         txt = row.inner_text()
+        preview = repr(txt[:80])
+        has_unread_str = "Unread message" in txt
 
-        if "Unread message" not in txt:
+        if not has_unread_str:
             continue
 
         name = None
-
-        for btn in row.query_selector_all("[role='button']"):
+        buttons = row.query_selector_all("[role='button']")
+        for btn in buttons:
             label = btn.get_attribute("aria-label") or ""
             m = re.match(r"^More options for (.+)$", label)
-
             if m:
                 name = m.group(1).strip()
                 break
 
         if not name:
-            lines = [
-                line.strip()
-                for line in txt.split("\n")
-                if line.strip()
-            ]
-
-            for line in lines:
+            lines_txt = [line.strip() for line in txt.split("\n") if line.strip()]
+            for line in lines_txt:
                 if line not in ("Active now", "Unread message:"):
                     name = line
                     break
@@ -232,7 +251,6 @@ def get_unread_convos(page):
 
 def find_and_click(page, target, aliases=None):
     check = [target.lower()]
-
     if aliases:
         check = aliases
 
@@ -240,11 +258,10 @@ def find_and_click(page, target, aliases=None):
     best = None
     best_name = None
 
-    for row in rows:
+    for idx, row in enumerate(rows):
         for btn in row.query_selector_all("[role='button']"):
             label = btn.get_attribute("aria-label") or ""
             m = re.match(r"^More options for (.+)$", label)
-
             if not m:
                 continue
 
@@ -269,15 +286,16 @@ def find_and_click(page, target, aliases=None):
             break
 
     if best:
-        link = best.query_selector("a")
-
+        link = best.query_selector("a[href*='/t/']") or best.query_selector("a")
         if link:
-            link.click()
+            # Dispatch synthetic click directly into the React DOM tree
+            link.evaluate("el => el.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}))")
+            page.wait_for_timeout(300)
+            if not link.evaluate("el => window.location.href.includes(el.getAttribute('href'))"):
+                link.click(force=True)
         else:
-            best.click()
-
+            best.click(force=True)
         return best_name
-
     return None
 
 
@@ -530,66 +548,30 @@ def main(target_name=None):
 
     try:
         with sync_playwright() as p:
-            # Only launch if our LogicBrowserProfile isn't already running.
-            launched_chrome = not is_chrome_running()
+            connected = False
+            for port in [DEBUG_PORT, 13350]:
+                try:
+                    browser = p.chromium.connect_over_cdp(f"http://localhost:{port}", timeout=1500)
+                    context = browser.contexts[0] if browser.contexts else browser.new_context()
+                    connected = True
+                    break
+                except Exception:
+                    pass
 
-            if launched_chrome:
-                chrome_args = [
-                    EXECUTABLE_PATH,
-                    f"--user-data-dir={USER_DATA_DIR}",
-                    f"--remote-debugging-port={DEBUG_PORT}",
+            if not connected:
+                extra_args = [
                     "--no-first-run",
                     "--no-default-browser-check",
-                    "--disable-gpu",
                     "--disable-extensions",
                     "--mute-audio",
-                    "--disable-background-networking",
-                    "--disable-component-update",
-                    "--renderer-process-limit=2",
-                    '--js-flags="--max-old-space-size=512"',
                 ]
-
-                if HEADLESS:
-                    chrome_args.append("--headless=new")
-
-                chrome_args.append("https://www.messenger.com/")
-
-                chrome_process = subprocess.Popen(chrome_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-                # Wait for Brave's debugging endpoint to become available.
-                deadline = time.time() + 15
-
-                while time.time() < deadline:
-                    if chrome_process.poll() is not None:
-                        raise RuntimeError(
-                            "Brave exited before it became available."
-                        )
-
-                    try:
-                        browser = p.chromium.connect_over_cdp(
-                            f"http://localhost:{DEBUG_PORT}",
-                            timeout=1000,
-                        )
-                        break
-                    except Exception:
-                        time.sleep(0.25)
-
-                if browser is None:
-                    raise RuntimeError(
-                        "Could not connect to the Brave debugging port."
-                    )
-            else:
-                # Connect to existing Brave. Never close it.
-                browser = p.chromium.connect_over_cdp(
-                    f"http://localhost:{DEBUG_PORT}"
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=USER_DATA_DIR,
+                    executable_path=EXECUTABLE_PATH,
+                    headless=HEADLESS,
+                    args=extra_args
                 )
-
-            context = (
-                browser.contexts[0]
-                if browser.contexts
-                else browser.new_context()
-            )
-
+                launched_chrome = True
             # Find existing Messenger tab or open a new one.
             page = None
 
@@ -635,13 +617,21 @@ def main(target_name=None):
 
                 # Suppress pre-scan announcement until conversations are validated
 
+                ignore_list = load_ignore_list()
+
                 for target in unread:
+                    real_target, _ = resolve_name(target)
+                    if is_ignored(target, ignore_list) or is_ignored(real_target, ignore_list):
+                        continue
+
                     if not find_and_click(page, target):
                         print(f"Could not find: {target}")
                         continue
 
                     wait_conversation_loaded(page, target)
                     header = get_convo_header_name(page) or target
+                    if is_ignored(header, ignore_list):
+                        continue
                     msgs = extract_messages(page)
 
                     if msgs:
@@ -697,7 +687,13 @@ def main(target_name=None):
 
 
 if __name__ == "__main__":
+    import traceback
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     name = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
-    main(target_name=name)
+    try:
+        main(target_name=name)
+    except Exception as e:
+        print("[SCRIPT CRASH DETECTED]:", flush=True)
+        traceback.print_exc()
+        sys.exit(1)
